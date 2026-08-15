@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 
 /// مطابقة الأسماء مع دفتر التليفون.
@@ -33,8 +34,8 @@ class ContactsService {
     if (cleaned.isEmpty) return const [];
 
     // رقم مكتوب صريح ما يحتاج دفتر تليفون ولا إذن.
-    if (_looksLikeNumber(cleaned)) {
-      return [ContactMatch(name: cleaned, phone: _normalise(cleaned))];
+    if (looksLikeNumber(cleaned)) {
+      return [ContactMatch(name: cleaned, phone: normalise(cleaned))];
     }
 
     if (!await ensurePermission()) return const [];
@@ -44,7 +45,7 @@ class ContactsService {
       properties: {ContactProperty.name, ContactProperty.phone},
     );
 
-    final needle = _fold(cleaned);
+    final needle = fold(cleaned);
     final exact = <ContactMatch>[];
     final partial = <ContactMatch>[];
 
@@ -55,10 +56,10 @@ class ContactsService {
       final number = contact.phones.first.number;
       if (displayName.isEmpty || number.isEmpty) continue;
 
-      final name = _fold(displayName);
+      final name = fold(displayName);
       if (name.isEmpty) continue;
 
-      final match = ContactMatch(name: displayName, phone: _normalise(number));
+      final match = ContactMatch(name: displayName, phone: normalise(number));
 
       if (name == needle) {
         exact.add(match);
@@ -70,15 +71,18 @@ class ContactsService {
     return [...exact, ...partial];
   }
 
-  static bool _looksLikeNumber(String value) =>
+  @visibleForTesting
+  static bool looksLikeNumber(String value) =>
       RegExp(r'^\+?[\d\s\-()]{7,}$').hasMatch(value);
 
-  static String _normalise(String phone) =>
+  @visibleForTesting
+  static String normalise(String phone) =>
       phone.replaceAll(RegExp(r'[\s\-()]'), '');
 
   /// يوحّد الاسم للمقارنة: يشيل التشكيل ويوحّد الألف والياء والتاء المربوطة،
   /// عشان «أبو سعد» و«ابو سعد» يطابقوا بعض.
-  static String _fold(String value) {
+  @visibleForTesting
+  static String fold(String value) {
     var folded = value.trim().toLowerCase();
     folded = folded.replaceAll(RegExp('[ً-ْـ]'), '');
     folded = folded

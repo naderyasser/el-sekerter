@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -29,7 +31,7 @@ enum SendOutcome {
 class MessagingService {
   /// يطلب رقم. على أندرويد مباشرة لو الإذن متاح، وإلا يفتح شاشة الاتصال.
   Future<bool> call(String phone) async {
-    final number = _clean(phone);
+    final number = clean(phone);
 
     if (Platform.isAndroid) {
       try {
@@ -48,7 +50,7 @@ class MessagingService {
 
   /// يفتح واتساب والرسالة مكتوبة. الإرسال بضغطة من صاحب العمل.
   Future<SendOutcome> whatsapp(String phone, String text) async {
-    final number = _international(phone);
+    final number = international(phone);
 
     // wa.me هو الرابط الرسمي وبيشتغل على الجهازين.
     final uri = Uri.parse(
@@ -63,7 +65,7 @@ class MessagingService {
 
   /// يفتح تطبيق الرسايل والنص جاهز.
   Future<SendOutcome> sms(String phone, String text) async {
-    final number = _clean(phone);
+    final number = clean(phone);
     // آيفون يبي & وأندرويد يقبل ?body= — Uri بيبنيها صح للاتنين.
     final uri = Uri(
       scheme: 'sms',
@@ -81,15 +83,17 @@ class MessagingService {
     }
   }
 
-  static String _clean(String phone) =>
+  @visibleForTesting
+  static String clean(String phone) =>
       phone.replaceAll(RegExp(r'[\s\-()]'), '');
 
   /// واتساب يبي الرقم بصيغة دولية بدون + ولا أصفار بادئة.
   ///
   /// الأرقام السعودية اللي تبدأ بـ05 تتحوّل لـ9665، وده الشكل اللي دفتر
   /// التليفون عادة يخزّنها فيه محليًا.
-  static String _international(String phone) {
-    var number = _clean(phone);
+  @visibleForTesting
+  static String international(String phone) {
+    var number = clean(phone);
     if (number.startsWith('+')) return number.substring(1);
     if (number.startsWith('00')) return number.substring(2);
     if (number.startsWith('05')) return '966${number.substring(1)}';
