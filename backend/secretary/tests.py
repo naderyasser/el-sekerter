@@ -590,3 +590,249 @@ class MissingKeyTests(SimpleTestCase):
         response = post(self)
         self.assertEqual(response.status_code, 503)
         self.assertIn("DEEPSEEK_API_KEY", response.json()["detail"])
+
+
+# ── قراءة رد المزوّد ───────────────────────────────────────────────────────
+# تحليل الرد هو الجزء اللي ما تغطّاش لحد دلوقتي، وهو أخطر جزء بعد الترجمة:
+# غلطة هنا معناها أمر ضايع بصمت أو تطبيق بيقع.
+
+
+class FakeMessages:
+    """يرجّع ردود محضّرة ويسجّل الطلبات عشان نفحص شكل النداء."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if not self._responses:
+            raise AssertionError("المزوّد اتنده مرات أكتر من المتوقع")
+        return self._responses.pop(0)
+
+
+def anthropic_response(blocks, stop_reason="end_turn", **extra):
+    return SimpleNamespace(content=blocks, stop_reason=stop_reason, **extra)
+
+
+class ClaudeResponseTests(SimpleTestCase):
+    """يبني ClaudeProvider بعميل موك ويقرا الرد."""
+
+    def provider_returning(self, response):
+        from .providers.claude import ClaudeProvider
+
+        provider = ClaudeProvider.__new__(ClaudeProvider)
+        provider._model = "claude-opus-5"
+        provider._effort = "low"
+        recorder = FakeMessages([response])
+        provider._client = SimpleNamespace(
+            beta=SimpleNamespace(messages=recorder)
+        )
+        return provider, recorder
+
+    def complete(self, provider):
+        return provider.complete(
+            instructions="تعليمات", context="سياق", turns=[], tools=[SPEC]
+        )
+
+    def test_text_only_reply(self):
+        provider, _ = self.provider_returning(
+            anthropic_response(
+                [SimpleNamespace(type="text", text="عندك موعدين بكرة.")]
+            )
+        )
+        reply = self.complete(provider)
+        self.assertEqual(reply.text, "عندك موعدين بكرة.")
+        self.assertEqual(reply.tool_calls, [])
+        self.assertFalse(reply.refused)
+
+    def test_tool_call_is_read(self):
+        provider, _ = self.provider_returning(
+            anthropic_response(
+                [
+                    SimpleNamespace(type="text", text="ثانية"),
+                    SimpleNamespace(
+                        type="tool_use",
+                        id="toolu_1",
+                        name="create_appointment",
+                        input=CREATE_ARGS,
+                    ),
+                ],
+                stop_reason="tool_use",
+            )
+        )
+        reply = self.complete(provider)
+        self.assertEqual(reply.text, "ثانية")
+        self.assertEqual(reply.tool_calls[0].name, "create_appointment")
+        self.assertEqual(reply.tool_calls[0].arguments, CREATE_ARGS)
+
+    def test_several_text_blocks_are_joined(self):
+        provider, _ = self.provider_returning(
+            anthropic_response(
+                [
+                    SimpleNamespace(type="text", text="الأول"),
+                    SimpleNamespace(type="text", text="الثاني"),
+                ]
+            )
+        )
+        self.assertEqual(self.complete(provider).text, "الأول\nالثاني")
+
+    def test_thinking_blocks_are_ignored(self):
+        provider, _ = self.provider_returning(
+            anthropic_response(
+                [
+                    SimpleNamespace(type="thinking", thinking="…"),
+                    SimpleNamespace(type="text", text="تم."),
+                ]
+            )
+        )
+        self.assertEqual(self.complete(provider).text, "تم.")
+
+    def test_refusal_is_flagged_and_content_untouched(self):
+        # المحتوى فاضي في الرفض — قراءته من غير فحص stop_reason توقّع.
+        provider, _ = self.provider_returning(
+            anthropic_response(
+                [],
+                stop_reason="refusal",
+                stop_details=SimpleNamespace(category="cyber"),
+            )
+        )
+        reply = self.complete(provider)
+        self.assertTrue(reply.refused)
+        self.assertEqual(reply.tool_calls, [])
+
+    def test_request_carries_cached_instructions_then_context(self):
+        provider, recorder = self.provider_returning(
+            anthropic_response([SimpleNamespace(type="text", text="تم.")])
+        )
+        self.complete(provider)
+        system = recorder.calls[0]["system"]
+        self.assertEqual(system[0]["text"], "تعليمات")
+        self.assertEqual(system[0]["cache_control"], {"type": "ephemeral"})
+        self.assertEqual(system[1]["text"], "سياق")
+        self.assertNotIn("cache_control", system[1])
+
+
+class DeepSeekResponseTests(SimpleTestCase):
+    def provider_returning(self, message):
+        from .providers.deepseek import DeepSeekProvider
+
+        provider = DeepSeekProvider.__new__(DeepSeekProvider)
+        provider._model = "deepseek-chat"
+        recorder = FakeMessages(
+            [SimpleNamespace(choices=[SimpleNamespace(message=message)])]
+        )
+        provider._client = SimpleNamespace(
+            chat=SimpleNamespace(completions=recorder)
+        )
+        return provider, recorder
+
+    def complete(self, provider):
+        return provider.complete(
+            instructions="تعليمات", context="سياق", turns=[], tools=[SPEC]
+        )
+
+    def test_text_only_reply(self):
+        provider, _ = self.provider_returning(
+            SimpleNamespace(content="عندك موعدين بكرة.", tool_calls=None)
+        )
+        reply = self.complete(provider)
+        self.assertEqual(reply.text, "عندك موعدين بكرة.")
+        self.assertEqual(reply.tool_calls, [])
+
+    def test_null_content_becomes_empty_not_crash(self):
+        # OpenAI بترجّع content=None لما يكون فيه استدعاء أداة بس.
+        provider, _ = self.provider_returning(
+            SimpleNamespace(
+                content=None,
+                tool_calls=[
+                    SimpleNamespace(
+                        id="t1",
+                        function=SimpleNamespace(
+                            name="create_appointment",
+                            arguments=json.dumps(CREATE_ARGS),
+                        ),
+                    )
+                ],
+            )
+        )
+        reply = self.complete(provider)
+        self.assertEqual(reply.text, "")
+        self.assertEqual(reply.tool_calls[0].arguments, CREATE_ARGS)
+
+    def test_broken_arguments_drop_only_that_call(self):
+        provider, _ = self.provider_returning(
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    SimpleNamespace(
+                        id="t1",
+                        function=SimpleNamespace(
+                            name="create_appointment", arguments="{ مكسور"
+                        ),
+                    ),
+                    SimpleNamespace(
+                        id="t2",
+                        function=SimpleNamespace(
+                            name="delete_appointment",
+                            arguments=json.dumps({"id": "a1"}),
+                        ),
+                    ),
+                ],
+            )
+        )
+        reply = self.complete(provider)
+        # الاستدعاء السليم لازم يعدّي حتى لو اللي قبله بايظ.
+        self.assertEqual(len(reply.tool_calls), 1)
+        self.assertEqual(reply.tool_calls[0].name, "delete_appointment")
+
+    def test_empty_choices_raises_provider_error(self):
+        from .providers.base import ProviderError
+        from .providers.deepseek import DeepSeekProvider
+
+        provider = DeepSeekProvider.__new__(DeepSeekProvider)
+        provider._model = "deepseek-chat"
+        provider._client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=FakeMessages([SimpleNamespace(choices=[])])
+            )
+        )
+        with self.assertRaises(ProviderError):
+            self.complete(provider)
+
+    def test_instructions_and_context_merge_into_one_system_message(self):
+        provider, recorder = self.provider_returning(
+            SimpleNamespace(content="تم.", tool_calls=None)
+        )
+        self.complete(provider)
+        messages = recorder.calls[0]["messages"]
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertIn("تعليمات", messages[0]["content"])
+        self.assertIn("سياق", messages[0]["content"])
+
+
+class PromptContentTests(SimpleTestCase):
+    """البرومبت هو اللي بيحدد سلوك السكرتير — تغيير فيه بالغلط يغيّر المنتج."""
+
+    def test_saudi_dialect_markers_are_present(self):
+        from .prompt import INSTRUCTIONS
+
+        for marker in ["العامية السعودية", "أبشر", "الحين"]:
+            self.assertIn(marker, INSTRUCTIONS)
+
+    def test_prayer_times_and_weekend_are_covered(self):
+        from .prompt import INSTRUCTIONS
+
+        for marker in ["بعد العصر", "بعد المغرب", "الجمعة والسبت"]:
+            self.assertIn(marker, INSTRUCTIONS)
+
+    def test_model_is_told_not_to_invent_ids_or_numbers(self):
+        from .prompt import INSTRUCTIONS
+
+        self.assertIn("لا تخترع id", INSTRUCTIONS)
+        self.assertIn("لا تخترع رقم", INSTRUCTIONS)
+
+    def test_calendar_events_are_declared_read_only(self):
+        from .prompt import INSTRUCTIONS
+
+        self.assertIn("لا تعدّلها ولا تلغيها", INSTRUCTIONS)
