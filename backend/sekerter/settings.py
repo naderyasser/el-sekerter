@@ -96,5 +96,9 @@ SEKERTER_EFFORT = os.environ.get("SEKERTER_EFFORT", "low").strip() or "low"
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
+# فاضي = أنثروبيك نفسها. مليان = بوابة متوافقة مع صيغة /v1/messages،
+# وساعتها المميزات الخاصة بأنثروبيك بتنشال من الطلب.
+ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "").strip()
+
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "").strip()

@@ -1,4 +1,17 @@
-"""مزوّد Claude (Anthropic)."""
+"""
+مزوّد صيغة Anthropic.
+
+بيخدم حالتين:
+
+  • **Anthropic نفسها** — وساعتها بنستغل كل مميزاتها: تكاش البرومبت،
+    output_config.effort، والرجوع لموديل تاني لما المصنّفات ترفض.
+
+  • **بوابة متوافقة** — أي سيرفر بيتكلم /v1/messages بنفس الصيغة، سواء
+    بتاعك أو OpenRouter أو غيره. المميزات اللي فوق دي إضافات خاصة
+    بأنثروبيك، والبوابة التانية غالبًا ترفض الطلب لو شافتها، فبنشيلها.
+
+الفرق بيتحدّد من SEKERTER_BASE_URL: فاضي = أنثروبيك، مليان = بوابة.
+"""
 
 from __future__ import annotations
 
@@ -22,6 +35,8 @@ from .base import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "claude-opus-5"
+# البوابات المتوافقة عادة ما تخدمش موديلات أنثروبيك، فالافتراضي بتاعها غيره.
+DEFAULT_GATEWAY_MODEL = "deepseek-chat"
 MAX_TOKENS = 4096
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
@@ -29,11 +44,25 @@ FALLBACK_BETA = "server-side-fallback-2026-07-01"
 class ClaudeProvider:
     name = "claude"
 
-    def __init__(self, *, api_key: str, model: str = "", effort: str = "low"):
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str = "",
+        effort: str = "low",
+        base_url: str = "",
+    ):
         if not api_key:
             raise ProviderError("ANTHROPIC_API_KEY مو مضبوط على السيرفر.")
-        self._client = anthropic.Anthropic(api_key=api_key)
-        self._model = model or DEFAULT_MODEL
+
+        # فاضي = أنثروبيك نفسها، وساعتها بس ننفّع بمميزاتها الخاصة.
+        self._native = not base_url
+        self._client = anthropic.Anthropic(
+            api_key=api_key, **({} if self._native else {"base_url": base_url})
+        )
+        self._model = model or (
+            DEFAULT_MODEL if self._native else DEFAULT_GATEWAY_MODEL
+        )
         self._effort = effort
 
     def complete(
@@ -44,28 +73,41 @@ class ClaudeProvider:
         turns: list[Turn],
         tools: list[ToolSpec],
     ) -> ModelReply:
+        request: dict[str, Any] = {
+            "model": self._model,
+            "max_tokens": MAX_TOKENS,
+            "messages": [self._encode(turn) for turn in turns],
+            "tools": [self._encode_tool(tool) for tool in tools],
+        }
+
+        if self._native:
+            request["system"] = [
+                {
+                    # الحد الأدنى للتكاش على claude-opus-5 هو ٥١٢ توكن،
+                    # والتعليمات فوقيه، فالبلوك ده بيتكاش ويتقرا بعد كده.
+                    "type": "text",
+                    "text": instructions,
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {"type": "text", "text": context},
+            ]
+            request["output_config"] = {"effort": self._effort}
+            # لو مصنّفات الأمان رفضت، الـAPI بيعيد الطلب على موديل تاني في
+            # نفس النداء بدل ما يرجّع رفض.
+            request["betas"] = [FALLBACK_BETA]
+            request["fallbacks"] = "default"
+        else:
+            # نص واحد بدل بلوكات — أبسط حاجة كل بوابة بتفهمها.
+            request["system"] = f"{instructions}\n\n{context}"
+
+        create = (
+            self._client.beta.messages.create
+            if self._native
+            else self._client.messages.create
+        )
+
         try:
-            response = self._client.beta.messages.create(
-                model=self._model,
-                max_tokens=MAX_TOKENS,
-                system=[
-                    {
-                        # الحد الأدنى للتكاش على claude-opus-5 هو ٥١٢ توكن،
-                        # والتعليمات فوقيه، فالبلوك ده بيتكاش ويتقرا بعد كده.
-                        "type": "text",
-                        "text": instructions,
-                        "cache_control": {"type": "ephemeral"},
-                    },
-                    {"type": "text", "text": context},
-                ],
-                messages=[self._encode(turn) for turn in turns],
-                tools=[self._encode_tool(tool) for tool in tools],
-                output_config={"effort": self._effort},
-                # لو مصنّفات الأمان رفضت، الـAPI بيعيد الطلب على موديل تاني في
-                # نفس النداء بدل ما يرجّع رفض.
-                betas=[FALLBACK_BETA],
-                fallbacks="default",
-            )
+            response = create(**request)
         except anthropic.APIStatusError as exc:
             logger.warning("Claude API error %s: %s", exc.status_code, exc.message)
             raise ProviderError("الخدمة مشغولة الحين، جرّب مرة ثانية بعد شوي.") from exc
@@ -75,9 +117,8 @@ class ClaudeProvider:
 
         # لازم قبل قراءة content: الرفض بيرجّع 200 بمحتوى فاضي أو ناقص.
         if response.stop_reason == "refusal":
-            logger.info(
-                "refusal: %s", getattr(response.stop_details, "category", None)
-            )
+            details = getattr(response, "stop_details", None)
+            logger.info("refusal: %s", getattr(details, "category", None))
             return ModelReply(refused=True)
 
         return ModelReply(
@@ -91,16 +132,18 @@ class ClaudeProvider:
             ],
         )
 
-    @staticmethod
-    def _encode_tool(tool: ToolSpec) -> dict[str, Any]:
-        return {
+    def _encode_tool(self, tool: ToolSpec) -> dict[str, Any]:
+        spec: dict[str, Any] = {
             "name": tool.name,
             "description": tool.description,
-            # strict بيضمن إن الحقول تطابق السكيما بالظبط، فبنستغنى عن تحقق
-            # دفاعي كتير في brain.py.
-            "strict": True,
             "input_schema": tool.parameters,
         }
+        # strict بيضمن إن الحقول تطابق السكيما بالظبط. إضافة خاصة بأنثروبيك،
+        # وبوابة ما تعرفهاش ممكن ترفض الطلب كله بسببها. brain.py بيتحقق من
+        # كل استدعاء بنفسه على أي حال، فشيلها ما بيفتحش أي ثغرة.
+        if self._native:
+            spec["strict"] = True
+        return spec
 
     @staticmethod
     def _encode(turn: Turn) -> dict[str, Any]:
@@ -146,4 +189,5 @@ def build() -> ClaudeProvider:
         api_key=settings.ANTHROPIC_API_KEY,
         model=settings.SEKERTER_MODEL,
         effort=settings.SEKERTER_EFFORT,
+        base_url=settings.ANTHROPIC_BASE_URL,
     )

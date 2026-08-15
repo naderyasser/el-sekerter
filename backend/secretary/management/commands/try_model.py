@@ -63,9 +63,7 @@ class Command(BaseCommand):
         self.stdout.write("")
         self.stdout.write(f"  المزوّد : {settings.SEKERTER_PROVIDER}")
         self.stdout.write(f"  الموديل : {settings.SEKERTER_MODEL or '(الافتراضي)'}")
-        if settings.SEKERTER_PROVIDER == "deepseek":
-            url = settings.DEEPSEEK_BASE_URL or "https://api.deepseek.com"
-            self.stdout.write(f"  العنوان : {url}")
+        self.stdout.write(f"  العنوان : {self._url()}")
         self.stdout.write("")
 
         passed = 0
@@ -118,17 +116,25 @@ class Command(BaseCommand):
 
         self._verdict(passed)
 
+    def _url(self) -> str:
+        if settings.SEKERTER_PROVIDER == "claude":
+            return settings.ANTHROPIC_BASE_URL or "https://api.anthropic.com"
+        return settings.DEEPSEEK_BASE_URL or "https://api.deepseek.com"
+
     def _unreachable(self) -> None:
         """فشل اتصال — مو فشل موديل. الفرق مهم عشان ما تدوّر في المكان الغلط."""
-        url = settings.DEEPSEEK_BASE_URL or "(الافتراضي)"
+        key = (
+            "ANTHROPIC_API_KEY"
+            if settings.SEKERTER_PROVIDER == "claude"
+            else "DEEPSEEK_API_KEY"
+        )
         self.stdout.write(
             self.style.ERROR(
                 "  ما فيه اتصال بالموديل — المشكلة في العنوان أو المفتاح،\n"
                 "  مو في الموديل نفسه. تأكد من:\n"
-                f"    • السيرفر شغّال فعلًا على {url}\n"
-                "    • العنوان ينتهي بـ/v1 (أغلب السيرفرات تبيها)\n"
+                f"    • السيرفر شغّال فعلًا على {self._url()}\n"
                 "    • الجهاز اللي عليه Django يوصل للعنوان ده\n"
-                "    • DEEPSEEK_API_KEY هو مفتاح سيرفرك"
+                f"    • {key} هو مفتاح سيرفرك"
             )
         )
         self.stdout.write("")

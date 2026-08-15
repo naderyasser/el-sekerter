@@ -462,7 +462,10 @@ class ClaudeEncodingTests(SimpleTestCase):
         from .providers.claude import ClaudeProvider
 
         self.encode = ClaudeProvider._encode
-        self.encode_tool = ClaudeProvider._encode_tool
+        # _encode_tool شكله بيختلف بين أنثروبيك والبوابة، فمحتاج نسخة.
+        native = ClaudeProvider.__new__(ClaudeProvider)
+        native._native = True
+        self.encode_tool = native._encode_tool
 
     def test_user_turn(self):
         self.assertEqual(
@@ -624,6 +627,7 @@ class ClaudeResponseTests(SimpleTestCase):
         provider = ClaudeProvider.__new__(ClaudeProvider)
         provider._model = "claude-opus-5"
         provider._effort = "low"
+        provider._native = True
         recorder = FakeMessages([response])
         provider._client = SimpleNamespace(
             beta=SimpleNamespace(messages=recorder)
@@ -711,6 +715,115 @@ class ClaudeResponseTests(SimpleTestCase):
         self.assertEqual(system[0]["cache_control"], {"type": "ephemeral"})
         self.assertEqual(system[1]["text"], "سياق")
         self.assertNotIn("cache_control", system[1])
+
+
+class GatewayTests(SimpleTestCase):
+    """
+    نفس المزوّد لكن على بوابة متوافقة بدل أنثروبيك نفسها.
+
+    الخطر هنا إن إضافات أنثروبيك (تكاش، output_config، fallbacks، strict)
+    تتسرّب للبوابة فترفض الطلب كله — والنتيجة سكرتير ما يرد على أي رسالة.
+    """
+
+    def provider_returning(self, response):
+        from .providers.claude import ClaudeProvider
+
+        provider = ClaudeProvider.__new__(ClaudeProvider)
+        provider._model = "deepseek-chat"
+        provider._effort = "low"
+        provider._native = False
+        recorder = FakeMessages([response])
+        # البوابة ما عندهاش beta — لو الكود ناداه هيوقع، وده المطلوب.
+        provider._client = SimpleNamespace(messages=recorder)
+        return provider, recorder
+
+    def request_for(self, response=None):
+        provider, recorder = self.provider_returning(
+            response or anthropic_response([SimpleNamespace(type="text", text="تم.")])
+        )
+        provider.complete(
+            instructions="تعليمات", context="سياق", turns=[], tools=[SPEC]
+        )
+        return recorder.calls[0]
+
+    def test_anthropic_only_fields_are_not_sent(self):
+        request = self.request_for()
+        for field in ("output_config", "betas", "fallbacks"):
+            self.assertNotIn(field, request)
+
+    def test_system_is_one_plain_string(self):
+        # بلوكات مع cache_control ترفضها البوابة؛ نص واحد كل حاجة تفهمه.
+        system = self.request_for()["system"]
+        self.assertIsInstance(system, str)
+        self.assertIn("تعليمات", system)
+        self.assertIn("سياق", system)
+
+    def test_tools_have_no_strict_flag(self):
+        tool = self.request_for()["tools"][0]
+        self.assertNotIn("strict", tool)
+        # الباقي لازم يفضل زي ما هو وإلا الأداة ما تشتغلش.
+        self.assertEqual(tool["name"], SPEC.name)
+        self.assertEqual(tool["input_schema"], SPEC.parameters)
+
+    def test_model_and_messages_still_sent(self):
+        request = self.request_for()
+        self.assertEqual(request["model"], "deepseek-chat")
+        self.assertIn("messages", request)
+        self.assertIn("max_tokens", request)
+
+    def test_tool_call_from_gateway_is_read(self):
+        request_response = anthropic_response(
+            [
+                SimpleNamespace(
+                    type="tool_use",
+                    id="toolu_1",
+                    name="create_appointment",
+                    input=CREATE_ARGS,
+                )
+            ],
+            stop_reason="tool_use",
+        )
+        provider, _ = self.provider_returning(request_response)
+        reply = provider.complete(
+            instructions="تعليمات", context="سياق", turns=[], tools=[SPEC]
+        )
+        self.assertEqual(reply.tool_calls[0].name, "create_appointment")
+
+    def test_refusal_without_stop_details_does_not_crash(self):
+        # أنثروبيك بترجّع stop_details؛ البوابة غالبًا لأ.
+        response = anthropic_response([], stop_reason="refusal")
+        self.assertFalse(hasattr(response, "stop_details"))
+        provider, _ = self.provider_returning(response)
+        reply = provider.complete(
+            instructions="تعليمات", context="سياق", turns=[], tools=[SPEC]
+        )
+        self.assertTrue(reply.refused)
+
+    def test_base_url_picks_gateway_defaults(self):
+        from .providers.claude import DEFAULT_GATEWAY_MODEL, ClaudeProvider
+
+        provider = ClaudeProvider(
+            api_key="k", base_url="https://example.invalid"
+        )
+        self.assertFalse(provider._native)
+        self.assertEqual(provider._model, DEFAULT_GATEWAY_MODEL)
+
+    def test_no_base_url_stays_on_anthropic(self):
+        from .providers.claude import DEFAULT_MODEL, ClaudeProvider
+
+        provider = ClaudeProvider(api_key="k")
+        self.assertTrue(provider._native)
+        self.assertEqual(provider._model, DEFAULT_MODEL)
+
+    def test_explicit_model_wins_over_gateway_default(self):
+        from .providers.claude import ClaudeProvider
+
+        provider = ClaudeProvider(
+            api_key="k",
+            model="deepseek-reasoner",
+            base_url="https://example.invalid",
+        )
+        self.assertEqual(provider._model, "deepseek-reasoner")
 
 
 class DeepSeekResponseTests(SimpleTestCase):
