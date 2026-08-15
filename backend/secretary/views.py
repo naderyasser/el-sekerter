@@ -7,7 +7,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from .brain import BrainUnavailable, chat
+from .brain import BrainUnavailable, chat  # noqa: F401
 from .serializers import ChatRequestSerializer
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ def chat_view(request):
     except Exception:
         logger.exception("chat failed")
         return Response(
-            {"detail": "حصل خطأ غير متوقع."},
+            {"detail": "صار خطأ غير متوقع."},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 

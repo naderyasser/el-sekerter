@@ -31,7 +31,7 @@ class ChatRequestSerializer(serializers.Serializer):
     # وقت الجهاز — هو المرجع لأي كلام نسبي زي «بكرة». السيرفر بيثق فيه عن قصد
     # عشان التوقيت اللي يهم هو توقيت صاحب العمل مش توقيت السيرفر.
     now = serializers.CharField(max_length=64)
-    timezone = serializers.CharField(max_length=64, default="Africa/Cairo")
+    timezone = serializers.CharField(max_length=64, default="Asia/Riyadh")
     appointments = AppointmentSerializer(many=True, required=False, default=list)
     history = HistoryMessageSerializer(many=True, required=False, default=list)
 
@@ -43,5 +43,5 @@ class ChatRequestSerializer(serializers.Serializer):
     def validate_appointments(self, value: list) -> list:
         # حد أعلى عشان ما نبعتش سياق ضخم للموديل من غير قصد.
         if len(value) > 200:
-            raise serializers.ValidationError("عدد المواعيد المبعوتة كبير جدًا.")
+            raise serializers.ValidationError("عدد المواعيد المرسلة كبير جدًا.")
         return value

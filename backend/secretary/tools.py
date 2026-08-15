@@ -7,16 +7,18 @@
 فالموديل بيقراها من البرومبت على طول من غير لفة زيادة.
 """
 
+from .providers.base import ToolSpec
+
 REPEAT_VALUES = ["none", "daily", "weekly", "monthly", "yearly"]
 
 _DATETIME_DESC = (
-    "وقت الميعاد بصيغة ISO 8601 ومعاه فرق التوقيت، "
+    "وقت الموعد بصيغة ISO 8601 ومعه فرق التوقيت، "
     "زي 2026-08-16T17:30:00+03:00. لازم يكون في المستقبل بالنسبة للوقت الحالي."
 )
 
 _REMIND_DESC = (
-    "التذكير بيرنّ قبل الميعاد بكام دقيقة. 60 هو الافتراضي لو المستخدم مقالش. "
-    "استخدم 0 لو عايزه يرنّ في وقت الميعاد بالظبط."
+    "التذكير يرنّ قبل الموعد بكم دقيقة. 60 هو الافتراضي إذا المستخدم ما حدّد. "
+    "استخدم 0 إذا تبيه يرنّ في وقت الموعد بالضبط."
 )
 
 
@@ -28,18 +30,17 @@ def _nullable(schema: dict, description: str) -> dict:
 CREATE_APPOINTMENT = {
     "name": "create_appointment",
     "description": (
-        "يسجّل ميعاد جديد ويجدول تذكير بيه. استخدمها لما صاحب العمل يقول عن "
-        "حاجة هيعملها في وقت معيّن، أو يطلب تفكيره بحاجة."
+        "يسجّل موعد جديد ويجدول تذكير فيه. استخدمها لما صاحب العمل يذكر "
+        "شي بيسوّيه في وقت معيّن، أو يطلب تذكيره بشي."
     ),
-    "strict": True,
-    "input_schema": {
+    "parameters": {
         "type": "object",
         "properties": {
             "title": {
                 "type": "string",
                 "description": (
-                    "عنوان قصير للميعاد بلغة صاحب العمل، زي «ميعاد الدكتور» أو "
-                    "«اجتماع المورّد». من غير كلمات زي «فكرني» أو «متنساش»."
+                    "عنوان قصير للموعد بكلام صاحب العمل، مثل «موعد الدكتور» أو "
+                    "«اجتماع المورّد». بدون كلمات مثل «ذكّرني» أو «لا تنسى»."
                 ),
             },
             "at": {"type": "string", "description": _DATETIME_DESC},
@@ -47,13 +48,13 @@ CREATE_APPOINTMENT = {
             "repeat": {
                 "type": "string",
                 "enum": REPEAT_VALUES,
-                "description": "تكرار الميعاد. none للميعاد اللي مرة واحدة.",
+                "description": "تكرار الموعد. none للموعد اللي مرة وحدة.",
             },
             "notes": {
                 "type": "string",
                 "description": (
-                    "أي تفاصيل زيادة قالها صاحب العمل (مكان، رقم تليفون، "
-                    "حاجة يجيبها معاه). سيبها فاضية لو مفيش."
+                    "أي تفاصيل زيادة قالها صاحب العمل (مكان، رقم جوال، "
+                    "شي يجيبه معه). خلّها فاضية إذا ما فيه."
                 ),
             },
         },
@@ -65,14 +66,13 @@ CREATE_APPOINTMENT = {
 UPDATE_APPOINTMENT = {
     "name": "update_appointment",
     "description": (
-        "يعدّل ميعاد موجود. حط null في أي حقل مش عايز تغيّره. "
+        "يعدّل موعد موجود. حط null في أي حقل ما تبي تغيّره. "
         "الـ id لازم يكون واحد من المواعيد المذكورة في «مواعيده الحالية»."
     ),
-    "strict": True,
-    "input_schema": {
+    "parameters": {
         "type": "object",
         "properties": {
-            "id": {"type": "string", "description": "معرّف الميعاد المراد تعديله."},
+            "id": {"type": "string", "description": "معرّف الموعد المراد تعديله."},
             "title": _nullable({"type": "string"}, "العنوان الجديد، أو null."),
             "at": _nullable({"type": "string"}, f"{_DATETIME_DESC} أو null."),
             "remind_before_minutes": _nullable(
@@ -91,14 +91,13 @@ UPDATE_APPOINTMENT = {
 DELETE_APPOINTMENT = {
     "name": "delete_appointment",
     "description": (
-        "يلغي ميعاد خالص. استخدمها لما صاحب العمل يقول إن الميعاد اتلغى أو "
-        "يطلب مسحه. لو الميعاد حصل خلاص استخدم complete_appointment بدالها."
+        "يلغي الموعد نهائيًا. استخدمها لما صاحب العمل يقول إن الموعد انلغى أو "
+        "يطلب حذفه. إذا الموعد صار خلاص استخدم complete_appointment بدالها."
     ),
-    "strict": True,
-    "input_schema": {
+    "parameters": {
         "type": "object",
         "properties": {
-            "id": {"type": "string", "description": "معرّف الميعاد المراد إلغاؤه."},
+            "id": {"type": "string", "description": "معرّف الموعد المراد إلغاؤه."},
         },
         "required": ["id"],
         "additionalProperties": False,
@@ -108,14 +107,13 @@ DELETE_APPOINTMENT = {
 COMPLETE_APPOINTMENT = {
     "name": "complete_appointment",
     "description": (
-        "يعلّم الميعاد إنه خلص. استخدمها لما صاحب العمل يقول إنه راح أو عمل "
-        "الحاجة دي بالفعل."
+        "يعلّم الموعد إنه خلص. استخدمها لما صاحب العمل يقول إنه راح أو سوّى "
+        "الشي هذا فعلًا."
     ),
-    "strict": True,
-    "input_schema": {
+    "parameters": {
         "type": "object",
         "properties": {
-            "id": {"type": "string", "description": "معرّف الميعاد اللي خلص."},
+            "id": {"type": "string", "description": "معرّف الموعد اللي خلص."},
         },
         "required": ["id"],
         "additionalProperties": False,
@@ -139,3 +137,15 @@ ACTION_TYPES = {
     "delete_appointment": "delete",
     "complete_appointment": "complete",
 }
+
+
+def tool_specs() -> list[ToolSpec]:
+    """التعريفات بالشكل المحايد اللي المزوّدين بيترجموه."""
+    return [
+        ToolSpec(
+            name=tool["name"],
+            description=tool["description"],
+            parameters=tool["parameters"],
+        )
+        for tool in ALL_TOOLS
+    ]
