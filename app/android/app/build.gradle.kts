@@ -6,12 +6,17 @@ plugins {
 
 android {
     namespace = "com.elsekerter.sekerter"
-    compileSdk = flutter.compileSdkVersion
+    // flutter_secure_storage و permission_handler_android بيطلبوا 37، وفحص
+    // AAR بيوقّع البناء لو أقل. Flutter لسه على 36 فبنحدّدها بإيدينا.
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // flutter_local_notifications بيستخدم java.time، وده بيحتاج
+        // desugaring عشان يشتغل على أندرويد أقدم من 8.
+        isCoreLibraryDesugaringEnabled = true
     }
 
     defaultConfig {
@@ -36,6 +41,10 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+}
+
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 }
 
 kotlin {
