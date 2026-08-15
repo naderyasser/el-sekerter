@@ -1,0 +1,6 @@
+Django==5.2.17
+djangorestframework==3.18.0
+django-cors-headers==4.10.0
+python-dotenv==1.2.1
+anthropic==0.122.0
+gunicorn==23.0.0
