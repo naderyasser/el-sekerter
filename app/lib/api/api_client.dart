@@ -33,7 +33,9 @@ class ApiClient {
   }) async {
     final token = await _settings.apiToken();
     if (token == null) {
-      throw ApiException('التطبيق مو مضبوط. افتح الإعدادات وحط عنوان السيرفر والتوكن.');
+      throw ApiException(
+        'التطبيق مو مضبوط. افتح الإعدادات وحط عنوان السيرفر والتوكن.',
+      );
     }
 
     final baseUrl = await _settings.apiBaseUrl();
@@ -96,7 +98,10 @@ class ApiClient {
         );
       case DioExceptionType.sendTimeout:
       case DioExceptionType.receiveTimeout:
-        return ApiException('السيرفر أخذ وقت طويل. جرّب مرة ثانية.', isNetwork: true);
+        return ApiException(
+          'السيرفر أخذ وقت طويل. جرّب مرة ثانية.',
+          isNetwork: true,
+        );
       default:
         break;
     }

@@ -1,0 +1,81 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../state/appointments_controller.dart';
+import 'appointments/appointments_screen.dart';
+import 'chat/chat_screen.dart';
+import 'settings/settings_screen.dart';
+
+class HomeShell extends ConsumerStatefulWidget {
+  const HomeShell({super.key});
+
+  @override
+  ConsumerState<HomeShell> createState() => _HomeShellState();
+}
+
+class _HomeShellState extends ConsumerState<HomeShell>
+    with WidgetsBindingObserver {
+  int _index = 0;
+
+  static const _screens = [
+    ChatScreen(),
+    AppointmentsScreen(),
+    SettingsScreen(),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // إعادة الجدولة عند كل رجوع للتطبيق. ده اللي بيغطّي حد الـ٦٤ إشعار على
+    // آيفون (المواعيد اللي كانت بره النافذة بتدخل لما الأقرب يعدّي)،
+    // والتذكيرات اللي رنّت خلاص، وتغيّر المنطقة الزمنية بعد سفر.
+    if (state == AppLifecycleState.resumed) {
+      ref.read(appointmentsProvider.notifier).refresh();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final upcoming = ref.watch(upcomingAppointmentsProvider).length;
+
+    return Scaffold(
+      body: IndexedStack(index: _index, children: _screens),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _index,
+        onDestinationSelected: (i) => setState(() => _index = i),
+        destinations: [
+          const NavigationDestination(
+            icon: Icon(Icons.chat_bubble_outline),
+            selectedIcon: Icon(Icons.chat_bubble),
+            label: 'السكرتير',
+          ),
+          NavigationDestination(
+            icon: Badge.count(
+              count: upcoming,
+              isLabelVisible: upcoming > 0,
+              child: const Icon(Icons.event_outlined),
+            ),
+            selectedIcon: const Icon(Icons.event),
+            label: 'مواعيدي',
+          ),
+          const NavigationDestination(
+            icon: Icon(Icons.settings_outlined),
+            selectedIcon: Icon(Icons.settings),
+            label: 'الإعدادات',
+          ),
+        ],
+      ),
+    );
+  }
+}

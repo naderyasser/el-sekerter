@@ -82,5 +82,6 @@ class ArabicDate {
     };
   }
 
-  static DateTime _startOfDay(DateTime at) => DateTime(at.year, at.month, at.day);
+  static DateTime _startOfDay(DateTime at) =>
+      DateTime(at.year, at.month, at.day);
 }
