@@ -1,0 +1,27 @@
+# أسرار — لازم تفضل بره الريبو
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+db.sqlite3
+
+# Flutter / Dart
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/build/
+app/android/.gradle/
+app/android/local.properties
+app/android/key.properties
+app/*.jks
+app/ios/Pods/
+
+# أدوات
+.DS_Store
+*.log
