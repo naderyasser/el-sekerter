@@ -149,3 +149,70 @@ def tool_specs() -> list[ToolSpec]:
         )
         for tool in ALL_TOOLS
     ]
+
+
+# ── قدرات الجهاز ───────────────────────────────────────────────────────────
+# الأدوات دي بيتنفّذها التطبيق على الجهاز، والسيرفر بيرجّعها كأوامر زي الباقي.
+#
+# ملاحظة مهمة: جهات الاتصال عمرها ما بتطلع من الجهاز. الموديل بيقول الاسم زي
+# ما صاحب العمل نطقه، والتطبيق هو اللي يطابقه محليًا مع دفتر التليفون ويسأله
+# لو فيه أكتر من واحد بنفس الاسم.
+
+_WHO_DESC = (
+    "الشخص المقصود زي ما صاحب العمل قاله بالضبط — اسم من دفتر تليفونه "
+    "(«أبو سعد»، «الدكتور خالد») أو رقم مكتوب صريح. لا تخترع رقم ولا تكمّل "
+    "اسم ناقص من عندك؛ التطبيق هو اللي يطابق الاسم مع جهات الاتصال."
+)
+
+CALL_CONTACT = {
+    "name": "call_contact",
+    "description": (
+        "يفتح مكالمة حالًا. استخدمها لما صاحب العمل يقول «كلّم فلان» أو "
+        "«اتصل بفلان» ويقصد الحين. إذا قال «ذكّرني أكلّمه الساعة كذا» "
+        "استخدم create_appointment بدالها."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {"who": {"type": "string", "description": _WHO_DESC}},
+        "required": ["who"],
+        "additionalProperties": False,
+    },
+}
+
+SEND_MESSAGE = {
+    "name": "send_message",
+    "description": (
+        "يبعت رسالة واتساب أو نصية. استخدمها لما صاحب العمل يطلب يبعت لأحد. "
+        "إذا ما حدّد القناة استخدم واتساب. حط وقت في at إذا طلب تأجيل "
+        "الإرسال («ابعتها له بكرة الصبح»)، وإلا خلّها null عشان تنبعت حالًا."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "who": {"type": "string", "description": _WHO_DESC},
+            "channel": {
+                "type": "string",
+                "enum": ["whatsapp", "sms"],
+                "description": "قناة الإرسال. واتساب هو الافتراضي.",
+            },
+            "text": {
+                "type": "string",
+                "description": (
+                    "نص الرسالة كامل وجاهز للإرسال، بلهجة صاحب العمل. "
+                    "لا تكتب «الرسالة هي» ولا أي مقدمة."
+                ),
+            },
+            "at": _nullable(
+                {"type": "string"},
+                f"{_DATETIME_DESC} — وقت إرسال الرسالة، أو null للإرسال حالًا.",
+            ),
+        },
+        "required": ["who", "channel", "text", "at"],
+        "additionalProperties": False,
+    },
+}
+
+ALL_TOOLS += [CALL_CONTACT, SEND_MESSAGE]
+TOOL_NAMES = {tool["name"] for tool in ALL_TOOLS}
+ACTION_TYPES["call_contact"] = "call"
+ACTION_TYPES["send_message"] = "message"

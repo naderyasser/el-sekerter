@@ -84,6 +84,21 @@ def _check_tool_input(
             return _missing_id_message(known_ids)
         return None
 
+    if name == "call_contact":
+        if not str(payload.get("who") or "").strip():
+            return "لازم تحدّد مين تكلّم."
+        return None
+
+    if name == "send_message":
+        if not str(payload.get("who") or "").strip():
+            return "لازم تحدّد مين تبعت له."
+        if not str(payload.get("text") or "").strip():
+            return "نص الرسالة فاضي."
+        # at اختياري: null = ابعت حالًا.
+        if payload.get("at") is not None:
+            return _validate_at(payload.get("at"))
+        return None
+
     return f"أداة غير معروفة: {name}"
 
 

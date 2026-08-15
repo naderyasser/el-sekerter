@@ -7,7 +7,7 @@ class AppDatabase {
 
   final Database db;
 
-  static const int _version = 1;
+  static const int _version = 2;
 
   static Future<AppDatabase> open({String fileName = 'sekerter.db'}) async {
     final path = p.join(await getDatabasesPath(), fileName);
@@ -16,6 +16,7 @@ class AppDatabase {
       version: _version,
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: _createSchema,
+      onUpgrade: _upgrade,
     );
     return AppDatabase._(db);
   }
@@ -29,7 +30,9 @@ class AppDatabase {
         remind_before_minutes  INTEGER NOT NULL DEFAULT 60,
         repeat                 TEXT    NOT NULL DEFAULT 'none',
         notes                  TEXT    NOT NULL DEFAULT '',
-        done                   INTEGER NOT NULL DEFAULT 0
+        done                   INTEGER NOT NULL DEFAULT 0,
+        source                 TEXT    NOT NULL DEFAULT 'sekerter',
+        calendar_event_id      TEXT
       )
     ''');
 
@@ -47,6 +50,19 @@ class AppDatabase {
         failed  INTEGER NOT NULL DEFAULT 0
       )
     ''');
+  }
+
+  /// ترقيات الشكل. لازم تكون تراكمية — مستخدم على نسخة قديمة يمر بكل خطوة.
+  static Future<void> _upgrade(Database db, int from, int to) async {
+    if (from < 2) {
+      await db.execute(
+        "ALTER TABLE appointments ADD COLUMN source TEXT NOT NULL "
+        "DEFAULT 'sekerter'",
+      );
+      await db.execute(
+        'ALTER TABLE appointments ADD COLUMN calendar_event_id TEXT',
+      );
+    }
   }
 
   Future<void> close() => db.close();

@@ -290,6 +290,91 @@ class ChatFlowTests(SimpleTestCase):
         self.assertEqual(len(turns), 21)  # 20 من التاريخ + الرسالة الجديدة
         self.assertEqual(turns[0].text, "رسالة 20")
 
+    def test_call_becomes_an_action(self):
+        response, _ = self.run_chat(
+            [
+                ModelReply(
+                    tool_calls=[ToolCall("t1", "call_contact", {"who": "أبو سعد"})]
+                ),
+                ModelReply(text="أطلبه لك الحين."),
+            ]
+        )
+        self.assertEqual(
+            response.json()["actions"], [{"type": "call", "who": "أبو سعد"}]
+        )
+
+    def test_message_now_has_null_at(self):
+        payload = {
+            "who": "أبو سعد",
+            "channel": "whatsapp",
+            "text": "السلام عليكم، الاجتماع بكرة الساعة عشر.",
+            "at": None,
+        }
+        response, _ = self.run_chat(
+            [
+                ModelReply(tool_calls=[ToolCall("t1", "send_message", payload)]),
+                ModelReply(text="انبعتت."),
+            ]
+        )
+        action = response.json()["actions"][0]
+        self.assertEqual(action["type"], "message")
+        self.assertEqual(action["channel"], "whatsapp")
+        self.assertIsNone(action["at"])
+
+    def test_scheduled_message_keeps_its_time(self):
+        payload = {
+            "who": "0501234567",
+            "channel": "sms",
+            "text": "تذكير بالموعد.",
+            "at": "2026-08-16T09:00:00+03:00",
+        }
+        response, _ = self.run_chat(
+            [
+                ModelReply(tool_calls=[ToolCall("t1", "send_message", payload)]),
+                ModelReply(text="بأبعتها بكرة الصبح."),
+            ]
+        )
+        self.assertEqual(
+            response.json()["actions"][0]["at"], "2026-08-16T09:00:00+03:00"
+        )
+
+    def test_message_without_text_is_rejected(self):
+        payload = {"who": "أبو سعد", "channel": "whatsapp", "text": "  ", "at": None}
+        response, provider = self.run_chat(
+            [
+                ModelReply(tool_calls=[ToolCall("t1", "send_message", payload)]),
+                ModelReply(text="تم."),
+            ]
+        )
+        self.assertEqual(response.json()["actions"], [])
+        self.assertIn("فاضي", provider.calls[1]["turns"][-1].results[0].content)
+
+    def test_call_without_who_is_rejected(self):
+        response, provider = self.run_chat(
+            [
+                ModelReply(tool_calls=[ToolCall("t1", "call_contact", {"who": ""})]),
+                ModelReply(text="تم."),
+            ]
+        )
+        self.assertEqual(response.json()["actions"], [])
+        self.assertIn("مين", provider.calls[1]["turns"][-1].results[0].content)
+
+    def test_scheduled_message_with_bad_time_is_rejected(self):
+        payload = {
+            "who": "أبو سعد",
+            "channel": "whatsapp",
+            "text": "تذكير",
+            "at": "بكرة الصبح",
+        }
+        response, provider = self.run_chat(
+            [
+                ModelReply(tool_calls=[ToolCall("t1", "send_message", payload)]),
+                ModelReply(text="تم."),
+            ]
+        )
+        self.assertEqual(response.json()["actions"], [])
+        self.assertIn("ISO 8601", provider.calls[1]["turns"][-1].results[0].content)
+
     def test_provider_failure_becomes_503(self):
         from .providers.base import ProviderError
 
@@ -319,11 +404,20 @@ class PromptTests(SimpleTestCase):
         # التعليمات منفصلة عن السياق عشان تتكاش لوحدها.
         self.assertNotIn("2026-08-15", call["instructions"])
 
+    def test_calendar_events_are_marked_read_only(self):
+        call = self._capture({
+            **BASE_PAYLOAD,
+            "appointments": [
+                {**APPOINTMENTS[0], "id": "c1", "source": "calendar"},
+            ],
+        })
+        self.assertIn("للقراءة بس", call["context"])
+
     def test_empty_appointments_says_so(self):
         call = self._capture({**BASE_PAYLOAD, "appointments": []})
         self.assertIn("ما فيه مواعيد مسجّلة", call["context"])
 
-    def test_all_four_tools_are_offered(self):
+    def test_every_tool_is_offered(self):
         call = self._capture()
         self.assertEqual(
             {t.name for t in call["tools"]},
@@ -332,6 +426,8 @@ class PromptTests(SimpleTestCase):
                 "update_appointment",
                 "delete_appointment",
                 "complete_appointment",
+                "call_contact",
+                "send_message",
             },
         )
 
