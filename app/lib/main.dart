@@ -1,16 +1,29 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/date_symbol_data_local.dart';
 
-void main() {
-  runApp(const MainApp());
-}
+import 'app.dart';
+import 'data/database.dart';
+import 'notifications/reminder_scheduler.dart';
+import 'state/providers.dart';
 
-class MainApp extends StatelessWidget {
-  const MainApp({super.key});
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
 
-  @override
-  Widget build(BuildContext context) {
-    return const MaterialApp(
-      home: Scaffold(body: Center(child: Text('Hello World!'))),
-    );
-  }
+  // الثلاثة دول لازم يخلصوا قبل أول إطار: أسماء الشهور بالعربي، قاعدة
+  // البيانات المحلية، والمناطق الزمنية اللي الجدولة بتحسب عليها.
+  await initializeDateFormatting('ar');
+  final database = await AppDatabase.open();
+  final scheduler = ReminderScheduler();
+  await scheduler.initialize();
+
+  runApp(
+    ProviderScope(
+      overrides: [
+        databaseProvider.overrideWithValue(database),
+        schedulerProvider.overrideWithValue(scheduler),
+      ],
+      child: const SekerterApp(),
+    ),
+  );
 }

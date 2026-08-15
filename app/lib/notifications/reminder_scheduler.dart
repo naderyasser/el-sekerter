@@ -28,22 +28,18 @@ class ReminderScheduler {
 
   bool _ready = false;
 
-  AndroidFlutterLocalNotificationsPlugin? get _android =>
-      _plugin
-          .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin
-          >();
+  AndroidFlutterLocalNotificationsPlugin? get _android => _plugin
+      .resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin
+      >();
 
-  IOSFlutterLocalNotificationsPlugin? get _ios =>
-      _plugin
-          .resolvePlatformSpecificImplementation<
-            IOSFlutterLocalNotificationsPlugin
-          >();
+  IOSFlutterLocalNotificationsPlugin? get _ios => _plugin
+      .resolvePlatformSpecificImplementation<
+        IOSFlutterLocalNotificationsPlugin
+      >();
 
   /// تتنده مرة واحدة في main() قبل runApp.
-  Future<void> initialize({
-    void Function(NotificationResponse)? onTap,
-  }) async {
+  Future<void> initialize({void Function(NotificationResponse)? onTap}) async {
     if (_ready) return;
 
     tzdata.initializeTimeZones();
