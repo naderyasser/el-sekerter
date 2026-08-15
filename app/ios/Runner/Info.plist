@@ -76,5 +76,17 @@
 	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>ar</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>عشان السكرتير يحط مواعيدك في تقويمك ويعرف إذا أنت فاضي.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>عشان السكرتير يحط مواعيدك في تقويمك ويعرف إذا أنت فاضي.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>عشان لما تقول «كلّم أبو سعد» يعرف مين هو ويطلب رقمه.</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>whatsapp</string>
+		<string>tel</string>
+		<string>sms</string>
+	</array>
 </dict>
 </plist>

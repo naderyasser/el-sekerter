@@ -22,6 +22,21 @@ enum Repeat {
   };
 }
 
+/// مصدر الموعد. يحدد إذا كان السكرتير يقدر يعدّله ولا لا.
+enum AppointmentSource {
+  /// موعد سجّله السكرتير — قابل للتعديل والإلغاء.
+  sekerter,
+
+  /// حدث من تقويم الجهاز — للقراءة بس.
+  calendar;
+
+  static AppointmentSource parse(String? value) =>
+      AppointmentSource.values.firstWhere(
+        (s) => s.name == value,
+        orElse: () => AppointmentSource.sekerter,
+      );
+}
+
 /// ميعاد واحد زي ما هو متخزّن على الجهاز.
 ///
 /// [at] متخزّن UTC في قاعدة البيانات وبيتحوّل للتوقيت المحلي عند القراءة، عشان
@@ -36,6 +51,8 @@ class Appointment {
     this.repeat = Repeat.none,
     this.notes = '',
     this.done = false,
+    this.source = AppointmentSource.sekerter,
+    this.calendarEventId,
   });
 
   final String id;
@@ -45,6 +62,13 @@ class Appointment {
   final Repeat repeat;
   final String notes;
   final bool done;
+  final AppointmentSource source;
+
+  /// معرّف الحدث المقابل في تقويم الجهاز، لو انضاف له.
+  final String? calendarEventId;
+
+  /// أحداث التقويم للقراءة بس — السكرتير ما يعدّلها ولا يلغيها.
+  bool get isEditable => source == AppointmentSource.sekerter;
 
   /// وقت رنّة التذكير. ممكن يكون في الماضي لو الميعاد قريب أوي — المسؤول عن
   /// فلترة دي هو المجدول مش الموديل.
@@ -59,6 +83,7 @@ class Appointment {
     Repeat? repeat,
     String? notes,
     bool? done,
+    String? calendarEventId,
   }) => Appointment(
     id: id,
     title: title ?? this.title,
@@ -67,6 +92,8 @@ class Appointment {
     repeat: repeat ?? this.repeat,
     notes: notes ?? this.notes,
     done: done ?? this.done,
+    source: source,
+    calendarEventId: calendarEventId ?? this.calendarEventId,
   );
 
   /// صف قاعدة البيانات المحلية.
@@ -78,6 +105,8 @@ class Appointment {
     'repeat': repeat.name,
     'notes': notes,
     'done': done ? 1 : 0,
+    'source': source.name,
+    'calendar_event_id': calendarEventId,
   };
 
   factory Appointment.fromRow(Map<String, Object?> row) => Appointment(
@@ -88,6 +117,8 @@ class Appointment {
     repeat: Repeat.parse(row['repeat'] as String?),
     notes: (row['notes'] as String?) ?? '',
     done: (row['done'] as int? ?? 0) == 1,
+    source: AppointmentSource.parse(row['source'] as String?),
+    calendarEventId: row['calendar_event_id'] as String?,
   );
 
   /// الشكل اللي بيتبعت للسيرفر كسياق. الوقت بيتبعت بالتوقيت المحلي بفرقه عشان
@@ -100,6 +131,7 @@ class Appointment {
     'repeat': repeat.name,
     'notes': notes,
     'done': done,
+    'source': source.name,
   };
 
   @override
@@ -111,9 +143,18 @@ class Appointment {
       other.remindBeforeMinutes == remindBeforeMinutes &&
       other.repeat == repeat &&
       other.notes == notes &&
-      other.done == done;
+      other.done == done &&
+      other.source == source;
 
   @override
-  int get hashCode =>
-      Object.hash(id, title, at, remindBeforeMinutes, repeat, notes, done);
+  int get hashCode => Object.hash(
+    id,
+    title,
+    at,
+    remindBeforeMinutes,
+    repeat,
+    notes,
+    done,
+    source,
+  );
 }

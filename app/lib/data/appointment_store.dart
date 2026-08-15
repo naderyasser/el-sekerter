@@ -114,7 +114,10 @@ class AppointmentStore {
           await delete(action.id!);
           touched.add(existing);
 
+        case ActionType.call:
+        case ActionType.message:
         case ActionType.unknown:
+          // أوامر الجهاز بينفّذها DeviceActionRunner، مش قاعدة البيانات.
           continue;
       }
     }

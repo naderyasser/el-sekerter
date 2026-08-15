@@ -10,6 +10,8 @@ enum ActionType {
   update,
   delete,
   complete,
+  call,
+  message,
   unknown;
 
   static ActionType parse(String? value) => ActionType.values.firstWhere(
@@ -29,6 +31,9 @@ class ServerAction {
     this.remindBeforeMinutes,
     this.repeat,
     this.notes,
+    this.who,
+    this.channel,
+    this.text,
   });
 
   final ActionType type;
@@ -42,6 +47,12 @@ class ServerAction {
   final int? remindBeforeMinutes;
   final Repeat? repeat;
   final String? notes;
+
+  /// أوامر الجهاز: مين المقصود، وبأي قناة، ونص الرسالة.
+  /// [who] اسم زي ما صاحب العمل نطقه — التطبيق يطابقه محليًا مع دفتر تليفونه.
+  final String? who;
+  final String? channel;
+  final String? text;
 
   factory ServerAction.fromJson(Map<String, Object?> json) {
     final rawAt = json['at'] as String?;
@@ -57,6 +68,9 @@ class ServerAction {
           ? null
           : Repeat.parse(json['repeat'] as String?),
       notes: json['notes'] as String?,
+      who: json['who'] as String?,
+      channel: json['channel'] as String?,
+      text: json['text'] as String?,
     );
   }
 
@@ -65,8 +79,14 @@ class ServerAction {
     ActionType.create => title != null && at != null,
     ActionType.update => id != null,
     ActionType.delete || ActionType.complete => id != null,
+    ActionType.call => (who ?? '').trim().isNotEmpty,
+    ActionType.message =>
+      (who ?? '').trim().isNotEmpty && (text ?? '').trim().isNotEmpty,
     ActionType.unknown => false,
   };
+
+  /// رسالة مجدولة: تتحوّل لموعد وتتنفّذ في وقتها بدل ما تنبعت حالًا.
+  bool get isScheduledMessage => type == ActionType.message && at != null;
 }
 
 /// رد السيرفر الكامل.

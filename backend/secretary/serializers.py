@@ -19,6 +19,11 @@ class AppointmentSerializer(serializers.Serializer):
         max_length=1000, required=False, allow_blank=True
     )
     done = serializers.BooleanField(required=False)
+    # sekerter = موعد سجّله السكرتير ويقدر يعدّله.
+    # calendar = حدث من تقويم الجهاز، للقراءة بس.
+    source = serializers.ChoiceField(
+        choices=["sekerter", "calendar"], required=False, default="sekerter"
+    )
 
 
 class HistoryMessageSerializer(serializers.Serializer):

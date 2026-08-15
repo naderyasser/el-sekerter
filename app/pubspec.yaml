@@ -34,6 +34,10 @@ dependencies:
 
   # تنسيق التواريخ بالعربي
   intl: ^0.20.3
+  device_calendar: ^3.9.0
+  flutter_contacts: ^2.3.1
+  url_launcher: ^6.3.2
+  android_intent_plus: ^6.1.0
 
 dev_dependencies:
   flutter_test:

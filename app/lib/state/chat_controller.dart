@@ -1,7 +1,9 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_client.dart';
+import '../models/appointment.dart';
 import '../models/chat_message.dart';
+import '../models/server_action.dart';
 import 'appointments_controller.dart';
 import 'providers.dart';
 
@@ -70,22 +72,50 @@ class ChatController extends AsyncNotifier<ChatState> {
           .read(apiClientProvider)
           .chat(
             message: trimmed,
-            appointments: await ref.read(appointmentStoreProvider).upcoming(),
+            appointments: await _contextAppointments(),
             history: history,
             timezone: DateTime.now().timeZoneName,
           );
 
-      if (response.actions.isNotEmpty) {
-        await ref.read(appointmentStoreProvider).applyActions(response.actions);
+      // الرسالة المجدولة موعد مو إرسال فوري — بتتنفّذ في وقتها.
+      final scheduled = response.actions
+          .where((a) => a.isScheduledMessage)
+          .toList();
+      final immediate = response.actions
+          .where((a) => !a.isScheduledMessage)
+          .toList();
+
+      if (immediate.isNotEmpty || scheduled.isNotEmpty) {
+        await ref.read(appointmentStoreProvider).applyActions([
+          ...immediate,
+          ...scheduled.map(_asAppointment),
+        ]);
         // إعادة الجدولة جزء من refresh — أي ميعاد اتغيّر لازم تذكيره يتظبّط.
         await ref.read(appointmentsProvider.notifier).refresh();
+      }
+
+      // الاتصال والإرسال الفوري بيتنفّذوا على الجهاز، ونتيجتهم بتتعرض في الشات
+      // عشان صاحب العمل يعرف إيش صار — خصوصًا لو الاسم طابق أكثر من واحد.
+      final notes = <String>[];
+      for (final action in immediate) {
+        final outcome = await ref.read(actionRunnerProvider).run(action);
+        if (outcome != null) notes.add(outcome.message);
       }
 
       final reply = await chatStore.add(
         ChatMessage(
           id: 0,
           sender: Sender.secretary,
-          text: response.reply.isEmpty ? 'تم.' : response.reply,
+          text:
+              [
+                if (response.reply.isNotEmpty) response.reply,
+                ...notes,
+              ].join('\n').trim().isEmpty
+              ? 'تم.'
+              : [
+                  if (response.reply.isNotEmpty) response.reply,
+                  ...notes,
+                ].join('\n'),
           at: DateTime.now(),
         ),
       );
@@ -112,6 +142,17 @@ class ChatController extends AsyncNotifier<ChatState> {
     }
   }
 
+  /// مواعيد السكرتير + أحداث تقويم الجهاز في الأسبوعين الجايين، عشان يقدر
+  /// يجاوب «أنا فاضي الخميس؟» من واقع جدوله كله مو من مواعيده هو بس.
+  Future<List<Appointment>> _contextAppointments() async {
+    final mine = await ref.read(appointmentStoreProvider).upcoming();
+    final now = DateTime.now();
+    final events = await ref
+        .read(calendarServiceProvider)
+        .eventsBetween(now, now.add(const Duration(days: 14)));
+    return [...mine, ...events]..sort((a, b) => a.at.compareTo(b.at));
+  }
+
   /// يعيد إرسال رسالة فشلت.
   Future<void> retry(ChatMessage message) async {
     final current = state.value ?? const ChatState();
@@ -135,6 +176,17 @@ class ChatController extends AsyncNotifier<ChatState> {
     state = const AsyncValue.data(ChatState());
   }
 }
+
+/// رسالة مجدولة بتتخزّن كموعد: الإشعار يرنّ في وقتها، وضغطة عليه تفتح
+/// واتساب والنص جاهز. ما فيه أي منصّة تسمح بإرسال صامت.
+ServerAction _asAppointment(ServerAction message) => ServerAction(
+  type: ActionType.create,
+  title: 'ابعت لـ${message.who}',
+  at: message.at,
+  remindBeforeMinutes: 0,
+  repeat: Repeat.none,
+  notes: message.text,
+);
 
 final chatProvider = AsyncNotifierProvider<ChatController, ChatState>(
   ChatController.new,
