@@ -130,5 +130,3 @@ jobs:
           الاختبارات: ${TESTS_PASSED} ناجحة
           SHA256: ${SHA256}"
           git push origin HEAD:apk-dist
-
-# محاولة ٣
