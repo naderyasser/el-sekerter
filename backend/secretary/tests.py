@@ -279,20 +279,34 @@ class ChatFlowTests(SimpleTestCase):
         self.assertEqual(response.json()["actions"], [])
         self.assertIn("ISO 8601", provider.calls[1]["turns"][-1].results[0].content)
 
-    def test_naive_datetime_is_rejected(self):
-        bad = {**CREATE_ARGS, "at": "2026-08-16T17:30:00"}
-        response, provider = self.run_chat(
+    def test_naive_datetime_gets_the_request_timezone(self):
+        """
+        الموديل كتير ينسى فرق التوقيت. الرفض كان يضيّع الموعد في الوضع
+        النصّي ويحرق لفّة في وضع الأدوات — والمنطقة جاية مع الطلب أصلًا،
+        فنكمّلها بدل ما نرفض. ده كان سبب «سجّلت ثلاثة والثالث مش موجود».
+        """
+        naive = {**CREATE_ARGS, "at": "2026-08-16T17:30:00"}
+        response, _ = self.run_chat(
             [
                 ModelReply(
-                    tool_calls=[ToolCall("t1", "create_appointment", bad)]
+                    tool_calls=[ToolCall("t1", "create_appointment", naive)]
                 ),
                 ModelReply(text="تم."),
             ]
         )
-        self.assertEqual(response.json()["actions"], [])
-        self.assertIn(
-            "فرق التوقيت", provider.calls[1]["turns"][-1].results[0].content
-        )
+        actions = response.json()["actions"]
+        self.assertEqual(len(actions), 1)
+        # Asia/Riyadh = +03:00 — نفس اللحظة، بس صارت كاملة وقابلة للتنفيذ.
+        self.assertEqual(actions[0]["at"], "2026-08-16T17:30:00+03:00")
+
+    def test_naive_datetime_with_bogus_timezone_is_still_rejected(self):
+        """لو المنطقة نفسها بايظة ما نقدرش نكمّل — نرجع للرفض القديم."""
+        from .brain import _normalise_at
+
+        payload = {"at": "2026-08-16T17:30:00"}
+        error = _normalise_at(payload, "Mars/Olympus_Mons")
+        self.assertIsNotNone(error)
+        self.assertIn("فرق التوقيت", error)
 
     def test_blank_title_is_rejected(self):
         bad = {**CREATE_ARGS, "title": "  "}
@@ -322,7 +336,7 @@ class ChatFlowTests(SimpleTestCase):
         ]
         response, provider = self.run_chat(looping)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(provider.calls), 4)  # MAX_TURNS
+        self.assertEqual(len(provider.calls), 8)  # MAX_TURNS
 
     def test_history_is_capped(self):
         history = [
@@ -1344,7 +1358,7 @@ class ChannelNormalisationTests(SimpleTestCase):
     def check(self, payload):
         from .brain import _check_tool_input
 
-        return _check_tool_input("send_message", payload, set())
+        return _check_tool_input("send_message", payload, set(), "Asia/Riyadh")
 
     def message(self, channel):
         return {"who": "سعد", "text": "تأخرت شوي", "channel": channel}

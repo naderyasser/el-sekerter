@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import 'package:android_intent_plus/android_intent.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 /// الاتصال وإرسال الرسايل.
@@ -34,14 +35,21 @@ class MessagingService {
     final number = clean(phone);
 
     if (Platform.isAndroid) {
+      // CALL_PHONE إذن وقت تشغيل — إعلانه في المانيفست ما يكفيش. قبل
+      // التصليح ده محدش كان بيطلبه أبدًا، فـ ACTION_CALL كان بيرمي
+      // SecurityException من أول مرة وعلى طول. أول طلب بيطلّع حوار
+      // النظام؛ لو رفض، بنفتح شاشة الاتصال والرقم مكتوب وهو يضغط.
       try {
-        await AndroidIntent(
-          action: 'android.intent.action.CALL',
-          data: 'tel:$number',
-        ).launch();
-        return true;
+        final granted = await Permission.phone.request();
+        if (granted.isGranted) {
+          await AndroidIntent(
+            action: 'android.intent.action.CALL',
+            data: 'tel:$number',
+          ).launch();
+          return true;
+        }
       } on Exception {
-        // الإذن مرفوض أو مافي تطبيق اتصال — نرجع لشاشة الطلب.
+        // الإذن اترفض أو مافي تطبيق اتصال — نرجع لشاشة الطلب.
       }
     }
 

@@ -33,8 +33,15 @@ class AppConfig {
   static const String kApiBaseUrl = 'api_base_url';
   static const String kApiToken = 'api_token';
 
-  /// قناة إشعارات أندرويد
-  static const String reminderChannelId = 'appointment_reminders';
+  /// قناة إشعارات أندرويد.
+  ///
+  /// v2 لأن أندرويد بيجمّد إعدادات القناة بعد إنشائها: النسخة الأولى كانت
+  /// بصوت الإشعارات العادي، وده بيتكتم مع الوضع الصامت وعدم الإزعاج —
+  /// والتذكير اللي ما يرنّش والجوال صامت هو بالظبط الحالة اللي التطبيق
+  /// موجود عشانها. القناة الجديدة بتطلع الصوت من قناة المنبّه (alarm stream)
+  /// اللي بيعدّي الاتنين. القديمة بتتمسح في initialize.
+  static const String reminderChannelId = 'appointment_reminders_v2';
+  static const String legacyReminderChannelId = 'appointment_reminders';
   static const String reminderChannelName = 'تذكير المواعيد';
   static const String reminderChannelDescription =
       'التنبيه اللي يرنّ قبل الموعد';

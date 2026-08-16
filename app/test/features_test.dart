@@ -15,7 +15,10 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:speech_to_text/speech_recognition_error.dart';
+import 'package:speech_to_text/speech_to_text.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -31,7 +34,9 @@ import 'package:sekerter/data/settings_store.dart';
 import 'package:sekerter/device/contacts_service.dart';
 import 'package:sekerter/device/messaging_service.dart';
 import 'package:sekerter/features/permission_gate.dart';
+import 'package:sekerter/models/appointment.dart';
 import 'package:sekerter/notifications/reminder_scheduler.dart';
+import 'package:sekerter/voice/speech_service.dart';
 import 'package:sekerter/state/appointments_controller.dart';
 import 'package:sekerter/state/chat_controller.dart';
 import 'package:sekerter/state/providers.dart';
@@ -55,6 +60,65 @@ class RecordingPlugin implements FlutterLocalNotificationsPlugin {
         return Future<void>.value();
       case #resolvePlatformSpecificImplementation:
         return null;
+      default:
+        return Future<void>.value();
+    }
+  }
+}
+
+/// بيتصرف زي أندرويد ١٢/١٣ لما إذن «الجدولة الدقيقة» مسحوب: أي جدولة دقيقة
+/// بترمي exact_alarms_not_permitted، وغير الدقيقة بتتقبل عادي.
+class ExactBlockedPlugin extends RecordingPlugin {
+  int exactAttempts = 0;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) {
+    if (invocation.memberName == #zonedSchedule &&
+        invocation.namedArguments[#androidScheduleMode] ==
+            AndroidScheduleMode.exactAllowWhileIdle) {
+      exactAttempts += 1;
+      return Future<void>.error(
+        PlatformException(code: 'exact_alarms_not_permitted'),
+      );
+    }
+    return super.noSuchMethod(invocation);
+  }
+}
+
+/// بيرمي من cancelAll نفسها — عشان نجرّب إن الشات ما يعلّقش لو إعادة
+/// الجدولة كلها وقعت لأي سبب.
+class BrokenPlugin extends RecordingPlugin {
+  @override
+  dynamic noSuchMethod(Invocation invocation) {
+    if (invocation.memberName == #cancelAll) {
+      return Future<void>.error(PlatformException(code: 'boom'));
+    }
+    return super.noSuchMethod(invocation);
+  }
+}
+
+/// محرّك تفريغ وهمي بيسلّمنا الـcallbacks اللي الخدمة سجّلتها عشان نطلق
+/// أحداث النظام (وقف الاستماع، عطل) بإيدينا.
+class FakeSpeechEngine implements SpeechToText {
+  void Function(SpeechRecognitionError)? capturedOnError;
+  void Function(String)? capturedOnStatus;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) {
+    switch (invocation.memberName) {
+      case #initialize:
+        capturedOnError =
+            invocation.namedArguments[#onError]
+                as void Function(SpeechRecognitionError)?;
+        capturedOnStatus =
+            invocation.namedArguments[#onStatus] as void Function(String)?;
+        return Future<bool>.value(true);
+      case #locales:
+        return Future<List<LocaleName>>.value([
+          LocaleName('ar_SA', 'العربية السعودية'),
+        ]);
+      case #isListening:
+        return false;
       default:
         return Future<void>.value();
     }
@@ -206,9 +270,10 @@ class Harness {
   static Future<Harness> start({
     Map<String, Object?> Function(RequestOptions)? reply,
     List<ContactMatch> contacts = const [],
+    RecordingPlugin? notificationsPlugin,
   }) async {
     final server = CannedServer(reply ?? (_) => serverReply('تم.'));
-    final plugin = RecordingPlugin();
+    final plugin = notificationsPlugin ?? RecordingPlugin();
     final messaging = RecordingMessaging();
 
     final storage = MemoryStorage();
@@ -842,6 +907,111 @@ void main() {
       await harness.container.read(appointmentsProvider.notifier).refresh();
 
       expect(harness.summaries, isEmpty);
+    });
+  });
+
+  // ── إصلاحات من أول تشغيل على جهاز حقيقي (الدفعة الثانية) ─────────────────
+
+  group('إصلاح: منع «الجدولة الدقيقة» كان يبلع كل التذكيرات في صمت', () {
+    Appointment appt(String id, {int hours = 3}) => Appointment(
+      id: id,
+      title: 'اجتماع $id',
+      at: DateTime.now().add(Duration(hours: hours)),
+    );
+
+    test('يقع على الجدولة غير الدقيقة بدل ما يرمي ويمسح كل حاجة', () async {
+      final plugin = ExactBlockedPlugin();
+      final scheduler = ReminderScheduler(plugin);
+
+      // قبل الإصلاح: أول zonedSchedule يرمي → rescheduleAll تقع بعد
+      // cancelAll → صفر تذكيرات متجدولة والمستخدم ما يعرف.
+      await scheduler.rescheduleAll([appt('a'), appt('b', hours: 5)]);
+
+      final reminders = plugin.scheduled
+          .where((c) => (c.namedArguments[#id] as int) < 1900000000)
+          .toList();
+      expect(reminders, hasLength(2));
+      for (final call in reminders) {
+        expect(
+          call.namedArguments[#androidScheduleMode],
+          AndroidScheduleMode.inexactAllowWhileIdle,
+        );
+      }
+      // اتحاول بالدقيقة الأول فعلًا — يعني الرجوع كان عن رفض حقيقي.
+      expect(plugin.exactAttempts, greaterThanOrEqualTo(2));
+    });
+
+    test('عطل الجدولة ما يعلّقش الشات — الرد يوصل ومعاه تنبيه', () async {
+      final harness = h = await Harness.start(
+        notificationsPlugin: BrokenPlugin(),
+        reply: (_) => serverReply('أبشر، سجّلته.', [
+          {
+            'type': 'create',
+            'title': 'اجتماع أبو سعد',
+            'at': isoIn(const Duration(hours: 3)),
+            'remind_before_minutes': 60,
+            'repeat': 'none',
+            'notes': '',
+          },
+        ]),
+      );
+
+      await harness.send('عندي اجتماع مع أبو سعد بعد ٣ ساعات');
+
+      final state = harness.container.read(chatProvider).value!;
+      // قبل الإصلاح: sending كانت بتفضل true للأبد والرد يضيع.
+      expect(state.sending, isFalse);
+      expect(state.messages.last.text, contains('سجّلته'));
+      expect(state.messages.last.text, contains('ما قدرت أضبط رنّة التذكير'));
+      // الموعد نفسه اتسجّل — المشكلة كانت في الرنّة بس.
+      expect(await harness.store.all(), hasLength(1));
+    });
+  });
+
+  group('إصلاح: زرار المايك كان بيعلّق على «أسمعك…»', () {
+    test('لما المحرّك يقف لوحده الخدمة تبلّغ والواجهة ترجع', () async {
+      final engine = FakeSpeechEngine();
+      final service = SpeechService(engine);
+
+      var stopped = 0;
+      service.onStopped = () => stopped++;
+
+      expect(await service.initialize(), isTrue);
+      // المحرّك وقف من غير أي نتيجة نهائية — زي ما بيحصل مع السكوت.
+      engine.capturedOnStatus!('notListening');
+      expect(stopped, 1);
+    });
+
+    test('العطل بيوصل للمستخدم بلغته مش بيضيع في اللوج', () async {
+      final engine = FakeSpeechEngine();
+      final service = SpeechService(engine);
+
+      String? problem;
+      var stopped = 0;
+      service.onProblem = (m) => problem = m;
+      service.onStopped = () => stopped++;
+
+      await service.initialize();
+      engine.capturedOnError!(SpeechRecognitionError('error_network', false));
+
+      expect(problem, contains('نت'));
+      expect(stopped, 1);
+    });
+
+    test('«ما فيه كلام» مش عطل يستاهل رسالة — بس المايك يرجع', () async {
+      final engine = FakeSpeechEngine();
+      final service = SpeechService(engine);
+
+      String? problem;
+      var stopped = 0;
+      service.onProblem = (m) => problem = m;
+      service.onStopped = () => stopped++;
+
+      await service.initialize();
+      engine.capturedOnError!(SpeechRecognitionError('error_no_match', false));
+
+      expect(problem, isNull);
+      expect(stopped, 1);
     });
   });
 }
