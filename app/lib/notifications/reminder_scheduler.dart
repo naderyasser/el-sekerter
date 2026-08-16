@@ -78,6 +78,10 @@ class ReminderScheduler {
   }
 
   /// يطلب أذونات الإشعارات. بيرجّع false لو المستخدم رفض.
+  ///
+  /// لازم تتنده من أول شاشة، مش من زرار في الإعدادات: أندرويد ١٣+ بيمنع
+  /// الإشعارات افتراضيًا لحد ما الإذن يتطلب، وأول مستخدم حقيقي ثبّت
+  /// التطبيق وسجّل موعد والتذكير ما رنّ — لأن محدش طلب الإذن أصلًا.
   Future<bool> requestPermissions() async {
     if (Platform.isIOS) {
       final granted = await _ios?.requestPermissions(
@@ -89,10 +93,19 @@ class ReminderScheduler {
     }
 
     final granted = await _android?.requestNotificationsPermission() ?? false;
-    // الجدولة الدقيقة إذن منفصل من أندرويد 13؛ من غيره التذكير ممكن يتأخر
-    // شوية لكن مش بيقف، فمش بنعتبر رفضه فشل.
-    await _android?.requestExactAlarmsPermission();
+    // الجدولة الدقيقة إذن منفصل من أندرويد ١٢. طلبه بيفتح صفحة إعدادات
+    // النظام، فما نزعجش المستخدم بيها لو هي أصلًا متاحة.
+    if (!await exactAlarmAllowed()) {
+      await _android?.requestExactAlarmsPermission();
+    }
     return granted;
+  }
+
+  /// هل النظام سامح بجدولة دقيقة؟ من غيرها التذكير بيتأخر أو ما يرنّش —
+  /// بعض الأجهزة (شاومي وسامسونج خصوصًا) متشددة في ده.
+  Future<bool> exactAlarmAllowed() async {
+    if (!Platform.isAndroid) return true;
+    return await _android?.canScheduleExactNotifications() ?? false;
   }
 
   Future<bool> hasPermission() async {

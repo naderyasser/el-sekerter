@@ -18,10 +18,10 @@ class MessageBubble extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final isUser = message.sender == Sender.user;
 
-    final background = isUser
-        ? scheme.primaryContainer
-        : scheme.surfaceContainerHighest;
-    final foreground = isUser ? scheme.onPrimaryContainer : scheme.onSurface;
+    // رسالة صاحب العمل باللون الأساسي الكامل — التمييز بين الطرفين لازم
+    // يبان من متر، مش درجتين متقاربين من نفس الرمادي.
+    final background = isUser ? scheme.primary : scheme.surfaceContainerHigh;
+    final foreground = isUser ? scheme.onPrimary : scheme.onSurface;
 
     return Align(
       alignment: isUser
