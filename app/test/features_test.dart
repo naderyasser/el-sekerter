@@ -32,6 +32,7 @@ import 'package:sekerter/device/contacts_service.dart';
 import 'package:sekerter/device/messaging_service.dart';
 import 'package:sekerter/features/permission_gate.dart';
 import 'package:sekerter/notifications/reminder_scheduler.dart';
+import 'package:sekerter/state/appointments_controller.dart';
 import 'package:sekerter/state/chat_controller.dart';
 import 'package:sekerter/state/providers.dart';
 
@@ -236,6 +237,15 @@ class Harness {
   }
 
   AppointmentStore get store => container.read(appointmentStoreProvider);
+
+  /// التذكيرات بس، من غير ملخصات الصبح — الملخص إشعار إضافي مش تذكير.
+  List<Invocation> get reminders => plugin.scheduled
+      .where((c) => (c.namedArguments[#id] as int) < 1900000000)
+      .toList();
+
+  List<Invocation> get summaries => plugin.scheduled
+      .where((c) => (c.namedArguments[#id] as int) >= 1900000000)
+      .toList();
   ChatStore get chatStore => container.read(chatStoreProvider);
 
   Future<void> send(String text) =>
@@ -292,8 +302,8 @@ void main() {
       expect(saved.single.title, 'اجتماع مع أبو سعد');
 
       // والتذكير اتجدول عند النظام: قبل الموعد بساعة بالظبط.
-      expect(harness.plugin.scheduled, hasLength(1));
-      final call = harness.plugin.scheduled.single;
+      expect(harness.reminders, hasLength(1));
+      final call = harness.reminders.single;
       final when = call.namedArguments[#scheduledDate] as tz.TZDateTime;
       expect(
         when.difference(tz.TZDateTime.from(saved.single.at, tz.local)),
@@ -331,7 +341,7 @@ void main() {
       await harness.send('عندي موعدين بكرة وعقب بكرة');
 
       expect(await harness.store.all(), hasLength(2));
-      expect(harness.plugin.scheduled, hasLength(2));
+      expect(harness.reminders, hasLength(2));
     });
   });
 
@@ -373,7 +383,7 @@ void main() {
       expect(updated!.at.day, DateTime.parse(laterAt).day);
 
       // التذكير اتجدول من جديد على الوقت الجديد، مش زيادة فوق القديم.
-      expect(harness.plugin.scheduled, hasLength(1));
+      expect(harness.reminders, hasLength(1));
       expect(harness.plugin.cancelAllCount, greaterThanOrEqualTo(2));
     });
 
@@ -401,7 +411,7 @@ void main() {
 
       expect(await harness.store.all(), isEmpty);
       // كل التذكيرات اتلغت وما اتجدولش بديل.
-      expect(harness.plugin.scheduled, isEmpty);
+      expect(harness.reminders, isEmpty);
     });
   });
 
@@ -514,7 +524,7 @@ void main() {
       expect(saved.title, contains('سعد'));
       expect(saved.notes, 'صباح الخير، موعدنا اليوم');
       expect(saved.remindBeforeMinutes, 0);
-      expect(harness.plugin.scheduled, hasLength(1));
+      expect(harness.reminders, hasLength(1));
     });
   });
 
@@ -570,7 +580,7 @@ void main() {
 
       await harness.send('اجتماع كل خميس');
 
-      final call = harness.plugin.scheduled.single;
+      final call = harness.reminders.single;
       expect(
         call.namedArguments[#matchDateTimeComponents],
         DateTimeComponents.dayOfWeekAndTime,
@@ -619,9 +629,9 @@ void main() {
       await harness.send('سجّل كل المواعيد دي');
 
       expect(await harness.store.all(), hasLength(60));
-      expect(harness.plugin.scheduled, hasLength(50));
+      expect(harness.reminders, hasLength(50));
       // الأقرب هو اللي اتجدول، مش عشوائي.
-      final titles = harness.plugin.scheduled
+      final titles = harness.reminders
           .map((c) => c.namedArguments[#title] as String)
           .toList();
       expect(titles.first, 'موعد 1');
@@ -661,6 +671,177 @@ void main() {
       await pump(tester, StubScheduler(granted: true, exact: true));
 
       expect(find.textContaining('اضغط للتفعيل'), findsNothing);
+    });
+  });
+
+  group('ميزة جديدة: أزرار على التذكير نفسه', () {
+    Future<Harness> withAppointmentTomorrow() async {
+      final harness = await Harness.start(
+        reply: (_) => serverReply('سجّلته.', [
+          {
+            'type': 'create',
+            'title': 'اجتماع مهم',
+            'at': isoIn(const Duration(days: 1)),
+            'remind_before_minutes': 60,
+            'repeat': 'none',
+            'notes': '',
+          },
+        ]),
+      );
+      await harness.send('عندي اجتماع بكرة');
+      return harness;
+    }
+
+    test('التذكير طالع ومعاه زرارين: تم وأجّل', () async {
+      final harness = h = await withAppointmentTomorrow();
+
+      final details =
+          harness.reminders.single.namedArguments[#notificationDetails]
+              as NotificationDetails;
+      final actions = details.android!.actions!;
+      expect(actions.map((a) => a.id), ['done', 'snooze']);
+      expect(actions.map((a) => a.title), ['تم', 'أجّل ربع ساعة']);
+      // الضغطة لازم توصل للتطبيق وهو صاحي — أضمن من معالج الخلفية.
+      expect(actions.every((a) => a.showsUserInterface), isTrue);
+      // وآيفون بياخد الفئة اللي فيها نفس الأزرار.
+      expect(details.iOS!.categoryIdentifier, 'sekerter_reminder');
+    });
+
+    test('«أجّل ربع ساعة» يأخّر الرنّة ويثبت في القاعدة', () async {
+      final harness = h = await withAppointmentTomorrow();
+      final created = (await harness.store.all()).single;
+
+      // نفس اللي بيحصل لما المستخدم يضغط الزرار.
+      final scheduler = harness.container.read(schedulerProvider);
+      expect(scheduler, isNotNull);
+      final before = DateTime.now();
+      await harness.store.update(
+        created.copyWith(snoozeUntil: before.add(ReminderScheduler.snoozeBy)),
+      );
+      await harness.container.read(appointmentsProvider.notifier).refresh();
+
+      final call = harness.reminders.single;
+      final when = call.namedArguments[#scheduledDate] as tz.TZDateTime;
+      // الرنّة الجديدة بعد ربع ساعة تقريبًا، مش قبل الموعد بساعة.
+      expect(when.difference(before).inMinutes, inInclusiveRange(14, 16));
+
+      // والتأجيل ناجي من إعادة فتح التطبيق لأنه متخزّن في القاعدة.
+      final reloaded = await harness.store.byId(created.id);
+      expect(reloaded!.snoozeUntil, isNotNull);
+    });
+
+    test('«تم» من الإشعار يقفل الموعد ويلغي رنّته', () async {
+      final harness = h = await withAppointmentTomorrow();
+      final created = (await harness.store.all()).single;
+
+      await harness.store.update(created.copyWith(done: true));
+      await harness.container.read(appointmentsProvider.notifier).refresh();
+
+      expect(harness.reminders, isEmpty);
+      expect((await harness.store.byId(created.id))!.done, isTrue);
+    });
+
+    test('تعديل وقت الموعد يشيل تأجيل قديم', () async {
+      final harness = h = await withAppointmentTomorrow();
+      final created = (await harness.store.all()).single;
+
+      await harness.store.update(
+        created.copyWith(
+          snoozeUntil: DateTime.now().add(ReminderScheduler.snoozeBy),
+        ),
+      );
+
+      harness.server.reply = (_) => serverReply('أجّلته.', [
+        {
+          'type': 'update',
+          'id': created.id,
+          'at': isoIn(const Duration(days: 5)),
+        },
+      ]);
+      await harness.send('أجّل الاجتماع');
+
+      // تأجيل ربع الساعة القديم اتشال — الرنّة بقت قبل الوقت الجديد بساعة.
+      final reloaded = await harness.store.byId(created.id);
+      expect(reloaded!.snoozeUntil, isNull);
+    });
+  });
+
+  group('ميزة جديدة: ملخص الصبح', () {
+    test('يوم فيه مواعيد ياخد إشعار ٦:٤٥ بعددها وأساميها', () async {
+      final harness = h = await Harness.start(
+        reply: (_) => serverReply('سجّلتهم.', [
+          {
+            'type': 'create',
+            'title': 'موعد الدكتور',
+            'at': isoIn(const Duration(days: 1)),
+            'remind_before_minutes': 60,
+            'repeat': 'none',
+            'notes': '',
+          },
+          {
+            'type': 'create',
+            'title': 'اجتماع المورّد',
+            'at': isoIn(const Duration(days: 1, hours: 2)),
+            'remind_before_minutes': 60,
+            'repeat': 'none',
+            'notes': '',
+          },
+        ]),
+      );
+
+      await harness.send('عندي موعدين بكرة');
+
+      expect(harness.summaries, hasLength(1));
+      final summary = harness.summaries.single;
+      expect(summary.namedArguments[#title], contains('2'));
+      expect(summary.namedArguments[#body], contains('موعد الدكتور'));
+      expect(summary.namedArguments[#body], contains('اجتماع المورّد'));
+
+      final when = summary.namedArguments[#scheduledDate] as tz.TZDateTime;
+      expect(when.hour, 6);
+      expect(when.minute, 45);
+    });
+
+    test('أيام من غير مواعيد ما تاخدش ملخص', () async {
+      final harness = h = await Harness.start(
+        reply: (_) => serverReply('سجّلته.', [
+          {
+            'type': 'create',
+            'title': 'موعد وحيد',
+            'at': isoIn(const Duration(days: 3)),
+            'remind_before_minutes': 60,
+            'repeat': 'none',
+            'notes': '',
+          },
+        ]),
+      );
+
+      await harness.send('موعد بعد ٣ أيام');
+
+      // ملخص واحد بس — لليوم اللي فيه الموعد، مش لكل يوم.
+      expect(harness.summaries, hasLength(1));
+    });
+
+    test('الموعد الخالص ما يظهرش في الملخص', () async {
+      final harness = h = await Harness.start(
+        reply: (_) => serverReply('سجّلته.', [
+          {
+            'type': 'create',
+            'title': 'موعد هيخلص',
+            'at': isoIn(const Duration(days: 1)),
+            'remind_before_minutes': 60,
+            'repeat': 'none',
+            'notes': '',
+          },
+        ]),
+      );
+      await harness.send('موعد بكرة');
+      final created = (await harness.store.all()).single;
+
+      await harness.store.update(created.copyWith(done: true));
+      await harness.container.read(appointmentsProvider.notifier).refresh();
+
+      expect(harness.summaries, isEmpty);
     });
   });
 }
