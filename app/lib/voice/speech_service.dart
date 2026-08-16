@@ -17,6 +17,15 @@ class SpeechService {
   bool _available = false;
   String? _localeId;
 
+  /// الاستماع وقف — سواء المستخدم سكت، أو المهلة خلصت، أو حصل عطل.
+  /// الواجهة لازم تسمع ده عشان زرار المايك ما يفضلش شكله «بيسمع» وهو واقف:
+  /// نتيجة نهائية (isFinal) مش مضمونة توصل أصلًا — لو ما فيش كلام اتلقط،
+  /// المحرّك بيقفل من غير أي onResult، وده كان بيسيب المايك معلّق للأبد.
+  void Function()? onStopped;
+
+  /// عطل بلغة المستخدم — يتعرض له بدل ما يضيع في اللوج.
+  void Function(String message)? onProblem;
+
   bool get isListening => _speech.isListening;
 
   /// بيرجّع false لو الجهاز مبيدعمش التفريغ أو المستخدم رفض إذن المايك.
@@ -24,14 +33,41 @@ class SpeechService {
     if (_available) return true;
 
     _available = await _speech.initialize(
-      onError: (e) => debugPrint('speech error: ${e.errorMsg}'),
-      // بنطفّي الصوت المزعج اللي بيطلع مع بداية الاستماع على بعض الأجهزة.
+      onError: (e) {
+        debugPrint('speech error: ${e.errorMsg}');
+        // «ما سمعتش حاجة» مش عطل يستاهل رسالة — بيحصل مع أي سكتة.
+        if (e.errorMsg != 'error_no_match' &&
+            e.errorMsg != 'error_speech_timeout') {
+          onProblem?.call(_describe(e.errorMsg));
+        }
+        onStopped?.call();
+      },
+      onStatus: (status) {
+        // المحرّك بيبعت notListening لما يقف لأي سبب — ده مصدر الحقيقة
+        // الوحيد اللي بيوصل في كل الحالات.
+        if (status == 'notListening' || status == 'done') {
+          onStopped?.call();
+        }
+      },
+      // بندوّر على محرّك التعرّف بالـintent — من غيرها بعض الأجهزة
+      // (خصوصًا اللي من غير خدمات جوجل كاملة) مبتلاقيش المحرّك أصلًا.
       options: [SpeechToText.androidIntentLookup],
     );
 
     if (_available) _localeId = await _resolveLocale();
     return _available;
   }
+
+  String _describe(String code) => switch (code) {
+    'error_network' || 'error_network_timeout' =>
+      'التعرّف على الكلام محتاج نت والاتصال ضعيف. اكتب رسالتك أو جرّب ثاني.',
+    'error_audio' || 'error_client' => 'صار خلل في المايك. جرّب مرة ثانية.',
+    'error_insufficient_permissions' =>
+      'إذن المايك مرفوض — فعّله من إعدادات الجهاز.',
+    'error_busy' ||
+    'error_recognizer_busy' => 'المايك مشغول مع تطبيق ثاني. سكّره وجرّب هنا.',
+    _ => 'ما قدرت أسمعك. جرّب مرة ثانية أو اكتب رسالتك.',
+  };
 
   Future<String?> _resolveLocale() async {
     final locales = await _speech.locales();
@@ -61,10 +97,13 @@ class SpeechService {
         partialResults: true,
         // المستخدم بيملي ميعاد، مش بيدردش — كلامه بيخلص بسرعة.
         listenMode: ListenMode.dictation,
-        cancelOnError: true,
-        // يقف بعد ٣ ثواني سكوت، وبحد أقصى ٣٠ ثانية للجلسة كلها.
-        pauseFor: const Duration(seconds: 3),
-        listenFor: const Duration(seconds: 30),
+        // إلغاء عند العطل كان بيرمي الكلام اللي اتلقط قبل العطل — إيقاف
+        // عادي بيسيبه مكتوب في الصندوق والمستخدم يكمّل عليه.
+        cancelOnError: false,
+        // ٥ ثواني سكوت: التلاتة كانت بتقصقص الجملة لما المستخدم ياخد نفس
+        // في نص ميعاد طويل («بكرة الساعة… خمسة العصر»).
+        pauseFor: const Duration(seconds: 5),
+        listenFor: const Duration(seconds: 60),
       ),
     );
   }

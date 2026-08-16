@@ -69,8 +69,8 @@ jobs:
 
           echo "عدد الاختبارات الناجحة: $passed"
           echo "TESTS_PASSED=$passed" >> "$GITHUB_ENV"
-          if [ "$passed" -lt 77 ]; then
-            echo "::error::المتوقع 77 اختبار على الأقل، الناجح $passed"
+          if [ "$passed" -lt 82 ]; then
+            echo "::error::المتوقع 82 اختبار على الأقل، الناجح $passed"
             exit 1
           fi
 

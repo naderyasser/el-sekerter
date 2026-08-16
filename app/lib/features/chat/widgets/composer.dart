@@ -51,6 +51,19 @@ class _ComposerState extends ConsumerState<Composer> {
       return;
     }
 
+    // المحرّك بيقف لوحده كتير (سكوت، مهلة، عطل) ومش مضمون توصل نتيجة
+    // نهائية — الإشارات دي هي اللي بترجّع زرار المايك لحالته بدل ما يفضل
+    // شكله «بيسمع» وهو واقف.
+    speech.onStopped = () {
+      if (mounted && _listening) setState(() => _listening = false);
+    };
+    speech.onProblem = (message) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(message)));
+    };
+
     if (!await speech.initialize()) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
