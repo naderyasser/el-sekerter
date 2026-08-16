@@ -8,8 +8,9 @@ on:
   workflow_dispatch:
   push:
     branches: [apk-dist]
-    paths-ignore:
-      - 'dist/**'
+    # من غير paths-ignore عشان كوميت فاضي يقدر يعيد التشغيل. اللوب مقفول
+    # من ناحيتين: كوميت الرَنَر فيه [skip ci]، وGitHub أصلًا ما بيعيدش
+    # تشغيل الworkflows على دفعات بتوكن GITHUB_TOKEN.
 
 concurrency:
   group: apk-dist
