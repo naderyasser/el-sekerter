@@ -95,10 +95,39 @@ BASE_SETTINGS = dict(
     # الاختبار ويقلب اختيار المزوّد — فتفشل اختبارات سليمة على السيرفر
     # وتنجح على جهاز فاضي. اختبار يعتمد على البيئة اللي حواليه ما يثبت شي.
     SEKERTER_BASE_URL="",
+    SEKERTER_TOOLS="native",
+    SEKERTER_FORMAT="messages",
+    SEKERTER_MODEL="",
+    SEKERTER_EFFORT="low",
+    SEKERTER_API_KEY="",
     SEKERTER_PROVIDER="claude",
     ANTHROPIC_API_KEY="test-key",
     DEBUG=False,
 )
+
+
+class HermeticSettingsTests(SimpleTestCase):
+    """
+    حارس ضد غلطة وقعت فيها مرتين.
+
+    كل ما أضيف إعداد SEKERTER_* جديد وأنسى أثبّته هنا، الاختبارات تبدأ تقرا
+    .env بتاع السيرفر الحقيقي بدل قيم الاختبار. النتيجة اختبارات تفشل على
+    السيرفر وتنجح على جهاز فاضي — والأسوأ إنها تدرّب اللي بينشر إنه يتجاهل
+    الأحمر، فالفشل الحقيقي يعدّي معاه.
+
+    الاختبار ده يفشل ساعة إضافة الإعداد، مش بعد النشر بأسبوع.
+    """
+
+    def test_every_sekerter_setting_is_pinned(self):
+        from django.conf import settings
+
+        live = {name for name in dir(settings) if name.startswith("SEKERTER_")}
+        missing = live - set(BASE_SETTINGS)
+        self.assertEqual(
+            missing,
+            set(),
+            f"إعدادات جديدة لازم تتثبّت في BASE_SETTINGS: {sorted(missing)}",
+        )
 
 
 @override_settings(**BASE_SETTINGS)
@@ -1054,3 +1083,173 @@ class PromptContentTests(SimpleTestCase):
         from .prompt import INSTRUCTIONS
 
         self.assertIn("لا تعدّلها ولا تلغيها", INSTRUCTIONS)
+
+
+# ── الوضع النصّي ───────────────────────────────────────────────────────────
+# الأوامر كـJSON جوّه الرد، لما السيرفر ما يدعمش الأدوات. التحليل هنا هو
+# الجزء الخطر: أمر يضيع بصمت معناه موعد ما اتسجّلش وصاحب العمل يفوته.
+
+
+def block(body: str) -> str:
+    from .text_protocol import FENCE
+
+    return f"```{FENCE}\n{body}\n```"
+
+
+class TextProtocolSplitTests(SimpleTestCase):
+    def split(self, reply):
+        from .text_protocol import split
+
+        return split(reply)
+
+    def test_reply_without_a_block_has_no_calls(self):
+        text, calls = self.split("عندك موعدين بكرة يا بويا.")
+        self.assertEqual(text, "عندك موعدين بكرة يا بويا.")
+        self.assertEqual(calls, [])
+
+    def test_block_is_read_and_stripped_from_the_reply(self):
+        reply = "أبشر، سجّلته لك.\n" + block(
+            '[{"tool": "create_appointment", "input": '
+            '{"title": "موعد الدكتور", "at": "2026-08-16T17:30:00+03:00"}}]'
+        )
+        text, calls = self.split(reply)
+        # صاحب العمل ما يشوف JSON.
+        self.assertEqual(text, "أبشر، سجّلته لك.")
+        self.assertEqual(calls[0]["name"], "create_appointment")
+        self.assertEqual(calls[0]["input"]["title"], "موعد الدكتور")
+
+    def test_several_calls_in_one_block(self):
+        _, calls = self.split(
+            block(
+                '[{"tool": "call_contact", "input": {"who": "أبو سعد"}},'
+                ' {"tool": "complete_appointment", "input": {"id": "a1"}}]'
+            )
+        )
+        self.assertEqual(
+            [c["name"] for c in calls], ["call_contact", "complete_appointment"]
+        )
+
+    def test_single_object_instead_of_a_list_is_accepted(self):
+        # غلطة شائعة ومفهومة — ما ينفعش نضيّع الأمر بسببها.
+        _, calls = self.split(
+            block('{"tool": "call_contact", "input": {"who": "أبو سعد"}}')
+        )
+        self.assertEqual(len(calls), 1)
+
+    def test_broken_json_is_dropped_and_not_shown_to_the_user(self):
+        text, calls = self.split("أبشر.\n" + block('[{"tool": "call_cont'))
+        self.assertEqual(calls, [])
+        # الأهم: البلوك المكسور ما يظهرش لصاحب العمل.
+        self.assertEqual(text, "أبشر.")
+        self.assertNotIn("tool", text)
+
+    def test_unknown_tool_is_dropped_but_the_rest_survives(self):
+        _, calls = self.split(
+            block(
+                '[{"tool": "delete_everything", "input": {}},'
+                ' {"tool": "call_contact", "input": {"who": "سعد"}}]'
+            )
+        )
+        self.assertEqual([c["name"] for c in calls], ["call_contact"])
+
+    def test_non_object_input_is_dropped(self):
+        _, calls = self.split(block('[{"tool": "call_contact", "input": "أبو سعد"}]'))
+        self.assertEqual(calls, [])
+
+    def test_missing_input_becomes_empty_dict(self):
+        # يتشال بعدين في التحقق، بس ما ينفعش يوقّع التحليل نفسه.
+        _, calls = self.split(block('[{"tool": "call_contact"}]'))
+        self.assertEqual(calls[0]["input"], {})
+
+    def test_json_elsewhere_in_the_text_is_not_mistaken_for_a_block(self):
+        reply = 'قال لي {"tool": "call_contact"} في رسالته، غريبة.'
+        text, calls = self.split(reply)
+        self.assertEqual(calls, [])
+        self.assertEqual(text, reply)
+
+    def test_plain_json_fence_is_not_treated_as_commands(self):
+        # ```json عادي ممكن يكتبه الموديل وهو بيشرح. السياج بتاعنا وحده.
+        _, calls = self.split(
+            '```json\n[{"tool": "call_contact", "input": {"who": "س"}}]\n```'
+        )
+        self.assertEqual(calls, [])
+
+
+@override_settings(**{**BASE_SETTINGS, "SEKERTER_TOOLS": "text"})
+class TextModeChatTests(SimpleTestCase):
+    def run_chat(self, reply_text, appointments=()):
+        from . import brain
+
+        provider = FakeProvider(
+            [SimpleNamespace(text=reply_text, tool_calls=[], refused=False)]
+        )
+        with patch("secretary.brain.get_provider", return_value=provider):
+            result = brain.chat(
+                message="…",
+                now_iso="2026-08-16T14:00:00+03:00",
+                timezone="Asia/Riyadh",
+                appointments=list(appointments),
+                history=[],
+            )
+        return result, provider
+
+    def test_valid_block_becomes_an_action(self):
+        result, _ = self.run_chat(
+            "أبشر.\n"
+            + block(
+                '[{"tool": "create_appointment", "input": '
+                f"{json.dumps(CREATE_ARGS, ensure_ascii=False)}}}]"
+            )
+        )
+        self.assertEqual(result["reply"], "أبشر.")
+        self.assertEqual(result["actions"][0]["type"], "create")
+        self.assertEqual(result["actions"][0]["title"], "موعد الدكتور")
+
+    def test_tools_are_not_sent_to_the_server(self):
+        # السيرفر اللي محتاج الوضع ده ممكن يرفض الطلب كله لو شاف tools.
+        _, provider = self.run_chat("تمام.")
+        self.assertEqual(provider.calls[0]["tools"], [])
+
+    def test_protocol_is_appended_to_the_instructions(self):
+        from .text_protocol import FENCE
+
+        _, provider = self.run_chat("تمام.")
+        self.assertIn(FENCE, provider.calls[0]["instructions"])
+
+    def test_invalid_time_is_rejected_like_in_native_mode(self):
+        result, _ = self.run_chat(
+            "أبشر.\n"
+            + block(
+                '[{"tool": "create_appointment", "input": '
+                '{"title": "موعد", "at": "بكرة"}}]'
+            )
+        )
+        # الوقت مو ISO — الأمر يتشال بدل ما يوصل للتطبيق بوقت ما يتقراش.
+        self.assertEqual(result["actions"], [])
+        self.assertEqual(result["reply"], "أبشر.")
+
+    def test_unknown_id_is_rejected(self):
+        result, _ = self.run_chat(
+            block('[{"tool": "delete_appointment", "input": {"id": "ghost"}}]'),
+            appointments=[{"id": "a1", "title": "x", "at": "…"}],
+        )
+        self.assertEqual(result["actions"], [])
+
+    def test_known_id_passes(self):
+        result, _ = self.run_chat(
+            block('[{"tool": "complete_appointment", "input": {"id": "a1"}}]'),
+            appointments=[{"id": "a1", "title": "x", "at": "…"}],
+        )
+        self.assertEqual(result["actions"][0]["type"], "complete")
+
+    def test_reply_that_is_only_a_block_still_says_something(self):
+        result, _ = self.run_chat(
+            block('[{"tool": "call_contact", "input": {"who": "سعد"}}]')
+        )
+        self.assertTrue(result["reply"])
+        self.assertEqual(result["actions"][0]["type"], "call")
+
+    def test_one_round_trip_only(self):
+        # مافيش حلقة في الوضع ده — نداء واحد بس.
+        _, provider = self.run_chat("تمام.")
+        self.assertEqual(len(provider.calls), 1)

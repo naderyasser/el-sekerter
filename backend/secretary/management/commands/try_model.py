@@ -64,6 +64,7 @@ class Command(BaseCommand):
         self.stdout.write(f"  العنوان : {self._url()}")
         self.stdout.write(f"  الصيغة  : {self._format()}")
         self.stdout.write(f"  الموديل : {settings.SEKERTER_MODEL or '(الافتراضي)'}")
+        self.stdout.write(f"  الأوامر : {settings.SEKERTER_TOOLS}")
         self.stdout.write("")
 
         passed = 0
@@ -160,19 +161,30 @@ class Command(BaseCommand):
             self.stdout.write(
                 self.style.SUCCESS("  الموديل جاهز — ركّب التطبيق وكلّمه.")
             )
-        elif passed == 0:
+        elif settings.SEKERTER_TOOLS == "text":
+            self.stdout.write(
+                self.style.WARNING(
+                    "  الوضع النصّي شغّال بس الموديل مو ملتزم بالبروتوكول في كل\n"
+                    "  الحالات. جرّب موديل أكبر من اللي يخدمه سيرفرك."
+                )
+            )
+        elif passed <= 1:
             self.stdout.write(
                 self.style.ERROR(
-                    "  الموديل ما يستدعي أدوات. جرّب موديل أكبر، أو تأكد إن\n"
-                    "  السيرفر بتاعك يدعم tool calling بصيغة OpenAI — من غيرها\n"
-                    "  السكرتير يرد كلام حلو وما يسجّل ولا موعد."
+                    "  سيرفرك ما يمرّر الأدوات — يرد كلام عدل بس ما ينفّذ شي.\n"
+                    "  ده أخطر وضع، لأن السكرتير يبان شغّال وما يسجّل ولا موعد.\n"
+                    "\n"
+                    "  الحل: حط في .env\n"
+                    "      SEKERTER_TOOLS=text\n"
+                    "  وأعد تشغيل الأمر. الأوامر بتيجي كـJSON جوّه نص الرد بدل\n"
+                    "  استدعاء الأدوات، وده يشتغل على أي سيرفر."
                 )
             )
         else:
             self.stdout.write(
                 self.style.WARNING(
                     "  يستدعي أدوات بس مو في كل الحالات. غالبًا موديل صغير.\n"
-                    "  جرّب واحد أكبر وقارن، أو بدّل لـclaude وشوف الفرق."
+                    "  جرّب واحد أكبر، أو حط SEKERTER_TOOLS=text وقارن."
                 )
             )
         self.stdout.write("")

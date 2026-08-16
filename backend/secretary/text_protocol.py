@@ -1,0 +1,148 @@
+"""
+الأوامر كـJSON جوّه نص الرد، لما السيرفر ما يدعمش استدعاء الأدوات.
+
+**ليه ده موجود أصلًا**
+
+بعض السيرفرات بتستقبل `tools` في الطلب وترميها في صمت — خصوصًا اللي قدّامها
+واجهة جلسات محادثة مش API حقيقي. النتيجة أسوأ فشل ممكن: الموديل يفهم كلامك
+صح ويرد «أبشر، سجّلته» و**ما يتسجّل ولا موعد**. الفشل ده شكله نجاح، فيعدّي
+من غير ما حد ياخد باله.
+
+الحل هنا إن الأوامر تتكتب كنص جوّه الرد. أي سيرفر يقدر يطلّع نص، فالطريقة
+دي بتشتغل على أي حاجة.
+
+**الثمن الحقيقي**
+
+أقل دقة من الأدوات الحقيقية: مافيش سكيما بتتفرض على الموديل، فممكن ينسى حقل
+أو يطلّع JSON مكسور. عشان كده كل أمر بيعدّي على نفس التحقق اللي في brain.py،
+والأمر اللي ما يعديش بيتشال لوحده والباقي يكمّل. لو سيرفرك بيدعم الأدوات
+فعلًا، سيب SEKERTER_TOOLS=native — أدق.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from typing import Any
+
+from . import tools as tool_defs
+
+logger = logging.getLogger(__name__)
+
+# بلوك مسيّج باسم صريح. الاسم ده مقصود إنه نادر عشان ما يتلغبطش مع أي JSON
+# تاني الموديل ممكن يكتبه في كلامه (زي ما يشرح شكل رسالة مثلًا).
+FENCE = "sekerter"
+
+_BLOCK = re.compile(
+    r"```" + FENCE + r"\s*(?P<body>.*?)```",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def instructions() -> str:
+    """الجزء اللي بيتزاد على البرومبت في الوضع النصّي."""
+    lines = [
+        "",
+        "# تنفيذ الأوامر",
+        "",
+        "أنت ما تقدر تسوي شي بنفسك. عشان أي شي يتنفّذ فعلًا لازم تكتب بلوك",
+        "أوامر في آخر ردّك بالشكل هذا بالضبط:",
+        "",
+        "```" + FENCE,
+        '[{"tool": "اسم_الأداة", "input": { … }}]',
+        "```",
+        "",
+        "قواعد ما تنكسر:",
+        "",
+        "- الكلام العادي فوق البلوك، والبلوك آخر شي في الرد.",
+        "- البلوك JSON صالح: مصفوفة، ولو ما فيه أوامر لا تكتب البلوك أصلًا.",
+        "- **لا تقول إنك سويت شي إلا والبلوك مكتوب.** لو قلت «أبشر، سجّلته»",
+        "  وما كتبت البلوك، ما راح ينسجّل ولا شي وصاحب العمل راح يفوته موعده.",
+        "- لا تشرح البلوك ولا تذكره في كلامك؛ صاحب العمل ما يشوفه.",
+        "",
+        "الأدوات المتاحة وحقولها:",
+        "",
+    ]
+
+    for tool in tool_defs.ALL_TOOLS:
+        lines.append(f"## {tool['name']}")
+        lines.append(tool["description"])
+        schema = tool["parameters"]
+        lines.append("الحقول:")
+        for field, spec in schema["properties"].items():
+            desc = spec.get("description", "")
+            optional = "anyOf" in spec
+            note = " (ينفع null)" if optional else ""
+            lines.append(f"- {field}{note}: {desc}")
+        lines.append("")
+
+    lines.extend(
+        [
+            "مثال كامل — «ذكّرني بالدكتور بكرة ٥ العصر»:",
+            "",
+            "أبشر، سجّلته لك بكرة ٥ العصر وأذكّرك قبله بساعة.",
+            "```" + FENCE,
+            '[{"tool": "create_appointment", "input": {"title": "موعد الدكتور",',
+            ' "at": "2026-08-17T17:00:00+03:00", "remind_before_minutes": 60,',
+            ' "repeat": "none", "notes": ""}}]',
+            "```",
+        ]
+    )
+
+    return "\n".join(lines)
+
+
+def split(reply: str) -> tuple[str, list[dict[str, Any]]]:
+    """
+    يفصل كلام صاحب العمل عن الأوامر.
+
+    يرجّع (النص اللي يتعرض، الاستدعاءات). أي بلوك مكسور بيتشال من النص
+    ويترمى — أحسن من إننا نعرض JSON لصاحب العمل.
+    """
+    calls: list[dict[str, Any]] = []
+
+    for match in _BLOCK.finditer(reply):
+        body = match.group("body").strip()
+        if not body:
+            continue
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            logger.warning("text-mode block was not valid JSON: %r", body[:200])
+            continue
+
+        # مصفوفة هي الشكل المطلوب، لكن أمر واحد لوحده غلطة شائعة نقبلها.
+        if isinstance(parsed, dict):
+            parsed = [parsed]
+        if not isinstance(parsed, list):
+            logger.warning("text-mode block was not a list: %r", body[:200])
+            continue
+
+        for item in parsed:
+            call = _read_call(item)
+            if call is not None:
+                calls.append(call)
+
+    text = _BLOCK.sub("", reply).strip()
+    return text, calls
+
+
+def _read_call(item: Any) -> dict[str, Any] | None:
+    """يتأكد إن العنصر استدعاء أداة معروف. الغلط بيتشال لوحده."""
+    if not isinstance(item, dict):
+        return None
+
+    name = item.get("tool")
+    if name not in tool_defs.TOOL_NAMES:
+        logger.warning("text-mode call named an unknown tool: %r", name)
+        return None
+
+    payload = item.get("input")
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        logger.warning("text-mode call had non-object input: %r", payload)
+        return None
+
+    return {"name": name, "input": payload}
