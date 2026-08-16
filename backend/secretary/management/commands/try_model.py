@@ -25,31 +25,75 @@ from ...providers import ProviderError
 TIMEZONE = "Asia/Riyadh"
 
 # كل حالة: الجملة، ونوع الأمر المتوقّع، وليه الحالة دي مهمة.
+# ── فحص التاريخ ────────────────────────────────────────────────────────────
+# نوع الأمر صح ما يكفي. موعد اتسجّل في اليوم الغلط أخطر من موعد ما اتسجّلش:
+# اللي ما اتسجّلش يبان لصاحب العمل فيسأل، واللي في اليوم الغلط يخلّيه مطمّن
+# وهو رايح في اليوم الخطأ. الأمر كان بيقول «تمام» للاتنين.
+
+
+def _at(action) -> dt.datetime | None:
+    try:
+        return dt.datetime.fromisoformat(action["at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _tomorrow_at_five(now, action):
+    at = _at(action)
+    if at is None:
+        return "ما فيه وقت مقروء في الأمر"
+
+    expected = (now + dt.timedelta(days=1)).date()
+    if at.date() != expected:
+        return f"التاريخ {at.date()} والمفروض بكرة = {expected}"
+    if at.hour != 17:
+        return f"الساعة {at.hour} والمفروض ٥ العصر = 17"
+    return None
+
+
+def _next_sunday_evening(now, action):
+    at = _at(action)
+    if at is None:
+        return "ما فيه وقت مقروء في الأمر"
+
+    # 6 = الأحد في datetime.weekday().
+    if at.weekday() != 6:
+        return f"{at.date()} يوم {at.strftime('%A')} مو الأحد"
+    if at < now:
+        return f"{at.date()} فات — لازم يكون في المستقبل"
+    return None
+
+
 CASES = [
     (
         "عندي اجتماع مع أبو سعد بكرة الساعة خمسة العصر",
         "create",
         "تسجيل موعد بوقت صريح",
+        _tomorrow_at_five,
     ),
     (
         "ذكّرني أروح المستشفى بعد المغرب يوم الأحد",
         "create",
         "وقت نسبي لصلاة — الموديل لازم يحوّله لساعة",
+        _next_sunday_evening,
     ),
     (
         "كلّم أبو خالد",
         "call",
         "أمر اتصال، والاسم يرجع زي ما هو",
+        None,
     ),
     (
         "ابعت لسعد على الواتس قل له تأخرت شوي",
         "message",
         "رسالة واتس، ولازم يفصل الاسم عن النص",
+        None,
     ),
     (
         "وش عندي بكرة؟",
         None,
         "سؤال — لازم يرد كلام من غير ما يسجّل شي",
+        None,
     ),
 ]
 
@@ -68,8 +112,9 @@ class Command(BaseCommand):
         self.stdout.write("")
 
         passed = 0
+        wrong_dates = 0
 
-        for sentence, expected, why in CASES:
+        for sentence, expected, why, check in CASES:
             self.stdout.write(f"  ‹ {sentence}")
 
             try:
@@ -92,8 +137,15 @@ class Command(BaseCommand):
             self.stdout.write(f"  › {result['reply']}")
 
             if got == expected:
-                passed += 1
-                self.stdout.write(self.style.SUCCESS(f"    تمام — {why}"))
+                problem = check(now, actions[0]) if check and actions else None
+                if problem:
+                    wrong_dates += 1
+                    self.stdout.write(
+                        self.style.ERROR(f"    التاريخ غلط — {problem}")
+                    )
+                else:
+                    passed += 1
+                    self.stdout.write(self.style.SUCCESS(f"    تمام — {why}"))
                 for action in actions:
                     self.stdout.write(f"    {action}")
             elif expected is None:
@@ -115,7 +167,7 @@ class Command(BaseCommand):
 
             self.stdout.write("")
 
-        self._verdict(passed)
+        self._verdict(passed, wrong_dates)
 
     def _url(self) -> str:
         if settings.SEKERTER_BASE_URL:
@@ -153,9 +205,27 @@ class Command(BaseCommand):
         )
         self.stdout.write("")
 
-    def _verdict(self, passed: int) -> None:
+    def _verdict(self, passed: int, wrong_dates: int = 0) -> None:
         total = len(CASES)
         self.stdout.write(f"  نجح {passed} من {total}")
+
+        if wrong_dates:
+            self.stdout.write(
+                self.style.ERROR(
+                    f"\n  {wrong_dates} موعد بتاريخ غلط. نوع الأمر صح والبروتوكول\n"
+                    "  شغّال، لكن الموديل يحسب التواريخ غلط رغم إن التقويم\n"
+                    "  محطوط قدّامه جاهز في البرومبت.\n"
+                    "\n"
+                    "  ده أخطر من أمر ضايع: الموعد الضايع يبان لصاحب العمل\n"
+                    "  فيسأل عنه، والموعد في اليوم الغلط يخلّيه مطمّن وهو رايح\n"
+                    "  في اليوم الخطأ.\n"
+                    "\n"
+                    "  الحل الوحيد موديل أقوى — جرّب اسم ثاني من:\n"
+                    f"      curl {self._url()}/v1/models"
+                )
+            )
+            self.stdout.write("")
+            return
 
         if passed == total:
             self.stdout.write(

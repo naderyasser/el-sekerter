@@ -1425,3 +1425,20 @@ class WeekdayCalendarTests(SimpleTestCase):
         # الوقت متحقّق منه في الـserializer، بس ما ينفعش يوقّع الرد كله.
         context = self.context("مش وقت")
         self.assertIn("مواعيده الحالية", context)
+
+
+@override_settings(**BASE_SETTINGS)
+class RootPageTests(SimpleTestCase):
+    """
+    الجذر كان بيرجّع 404، واللي يفتح الدومين في المتصفح يفتكر النشر باظ.
+    """
+
+    def test_root_answers_without_a_token(self):
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "ok")
+
+    def test_root_points_at_the_real_endpoints(self):
+        body = self.client.get("/").json()
+        self.assertEqual(body["endpoints"]["health"], "/api/secretary/health")
+        self.assertIn("/api/secretary/chat", body["endpoints"]["chat"])
