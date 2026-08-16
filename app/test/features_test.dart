@@ -1,0 +1,666 @@
+// ignore_for_file: avoid_dynamic_calls
+
+/// جولة تجربة على كل ميزة وعدنا بيها.
+///
+/// مافيش محاكي أندرويد في بيئة التطوير دي، فدي أقرب حاجة لتجربة حقيقية:
+/// شجرة التطبيق الحقيقية + قاعدة بيانات حقيقية + سيرفر وهمي بيرد بردود
+/// السيرفر الفعلية + إضافات نظام مسجّلة بدل المنفّذة. كل حاجة بتتجرّب هنا
+/// ما عدا رنّة النظام نفسها — دي محتاجة جهاز.
+///
+/// كل مجموعة معنونة بالميزة زي ما اتوعدت للعميل بالظبط.
+library;
+
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:dio/dio.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:timezone/data/latest_all.dart' as tzdata;
+import 'package:timezone/timezone.dart' as tz;
+
+import 'package:sekerter/api/api_client.dart';
+import 'package:sekerter/data/appointment_store.dart';
+import 'package:sekerter/data/chat_store.dart';
+import 'package:sekerter/data/database.dart';
+import 'package:sekerter/data/settings_store.dart';
+import 'package:sekerter/device/contacts_service.dart';
+import 'package:sekerter/device/messaging_service.dart';
+import 'package:sekerter/features/permission_gate.dart';
+import 'package:sekerter/notifications/reminder_scheduler.dart';
+import 'package:sekerter/state/chat_controller.dart';
+import 'package:sekerter/state/providers.dart';
+
+// ── بدائل الأجزاء اللي بتلمس النظام ────────────────────────────────────────
+
+/// بيسجّل نداءات الجدولة بدل ما يكلّم نظام التشغيل.
+class RecordingPlugin implements FlutterLocalNotificationsPlugin {
+  final List<Invocation> scheduled = [];
+  int cancelAllCount = 0;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) {
+    switch (invocation.memberName) {
+      case #zonedSchedule:
+        scheduled.add(invocation);
+        return Future<void>.value();
+      case #cancelAll:
+        cancelAllCount += 1;
+        scheduled.clear();
+        return Future<void>.value();
+      case #resolvePlatformSpecificImplementation:
+        return null;
+      default:
+        return Future<void>.value();
+    }
+  }
+}
+
+/// تخزين في الذاكرة بدل keystore الجهاز.
+class MemoryStorage implements FlutterSecureStorage {
+  final Map<String, String> values = {};
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) {
+    final key = invocation.namedArguments[#key] as String?;
+    switch (invocation.memberName) {
+      case #read:
+        return Future<String?>.value(values[key]);
+      case #write:
+        values[key!] = invocation.namedArguments[#value] as String;
+        return Future<void>.value();
+      case #delete:
+        values.remove(key);
+        return Future<void>.value();
+      default:
+        return Future<void>.value();
+    }
+  }
+}
+
+/// سيرفر وهمي على مستوى HTTP — بيمسك الطلب الحقيقي اللي التطبيق بناه
+/// (العنوان والهيدر والجسم) ويرد بالـJSON اللي السيرفر الفعلي بيرده.
+class CannedServer implements HttpClientAdapter {
+  CannedServer(this.reply);
+
+  Map<String, Object?> Function(RequestOptions options) reply;
+  final List<RequestOptions> requests = [];
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    requests.add(options);
+    return ResponseBody.fromString(
+      jsonEncode(reply(options)),
+      200,
+      headers: {
+        Headers.contentTypeHeader: [Headers.jsonContentType],
+      },
+    );
+  }
+
+  @override
+  void close({bool force = false}) {}
+}
+
+class FakeContacts implements ContactsService {
+  FakeContacts(this.book);
+
+  final List<ContactMatch> book;
+
+  @override
+  Future<List<ContactMatch>> search(String query) async {
+    if (ContactsService.looksLikeNumber(query.trim())) {
+      return [
+        ContactMatch(
+          name: query.trim(),
+          phone: ContactsService.normalise(query.trim()),
+        ),
+      ];
+    }
+    final folded = ContactsService.fold(query);
+    return book
+        .where((c) => ContactsService.fold(c.name).contains(folded))
+        .toList();
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => Future<bool>.value(true);
+}
+
+/// بيسجّل بدل ما يفتح تطبيقات — مافيش واتساب في بيئة الاختبار.
+class RecordingMessaging implements MessagingService {
+  final List<String> calls = [];
+  final List<(String, String)> whatsapps = [];
+  final List<(String, String)> smses = [];
+
+  @override
+  Future<bool> call(String phone) async {
+    calls.add(MessagingService.clean(phone));
+    return true;
+  }
+
+  @override
+  Future<SendOutcome> whatsapp(String phone, String text) async {
+    whatsapps.add((MessagingService.international(phone), text));
+    return SendOutcome.opened;
+  }
+
+  @override
+  Future<SendOutcome> sms(String phone, String text) async {
+    smses.add((MessagingService.clean(phone), text));
+    return SendOutcome.opened;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => Future<void>.value();
+}
+
+/// مجدول بإجابات جاهزة — لاختبار شريط تحذير الأذونات.
+class StubScheduler extends ReminderScheduler {
+  StubScheduler({required this.granted, required this.exact})
+    : super(RecordingPlugin());
+
+  final bool granted;
+  final bool exact;
+  int requestCount = 0;
+
+  @override
+  Future<bool> requestPermissions() async {
+    requestCount += 1;
+    return granted;
+  }
+
+  @override
+  Future<bool> hasPermission() async => granted;
+
+  @override
+  Future<bool> exactAlarmAllowed() async => exact;
+}
+
+// ── تجهيز البيئة ───────────────────────────────────────────────────────────
+
+/// رد سيرفر جاهز بشكل الأوامر الفعلي.
+Map<String, Object?> serverReply(
+  String reply, [
+  List<Map<String, Object?>> actions = const [],
+]) => {'reply': reply, 'actions': actions};
+
+class Harness {
+  Harness._(this.container, this.server, this.plugin, this.messaging, this.db);
+
+  final ProviderContainer container;
+  final CannedServer server;
+  final RecordingPlugin plugin;
+  final RecordingMessaging messaging;
+  final AppDatabase db;
+
+  static Future<Harness> start({
+    Map<String, Object?> Function(RequestOptions)? reply,
+    List<ContactMatch> contacts = const [],
+  }) async {
+    final server = CannedServer(reply ?? (_) => serverReply('تم.'));
+    final plugin = RecordingPlugin();
+    final messaging = RecordingMessaging();
+
+    final storage = MemoryStorage();
+    final settings = SettingsStore(storage);
+    await settings.setApiBaseUrl('https://sekerter.test');
+    await settings.setApiToken('test-token');
+
+    final db = await AppDatabase.open(
+      fileName: 'features_${DateTime.now().microsecondsSinceEpoch}.db',
+    );
+
+    final dio = Dio()..httpClientAdapter = server;
+
+    final container = ProviderContainer(
+      overrides: [
+        databaseProvider.overrideWithValue(db),
+        schedulerProvider.overrideWithValue(ReminderScheduler(plugin)),
+        settingsStoreProvider.overrideWithValue(settings),
+        apiClientProvider.overrideWithValue(ApiClient(settings, dio: dio)),
+        contactsServiceProvider.overrideWithValue(FakeContacts(contacts)),
+        messagingServiceProvider.overrideWithValue(messaging),
+      ],
+    );
+
+    return Harness._(container, server, plugin, messaging, db);
+  }
+
+  AppointmentStore get store => container.read(appointmentStoreProvider);
+  ChatStore get chatStore => container.read(chatStoreProvider);
+
+  Future<void> send(String text) =>
+      container.read(chatProvider.notifier).send(text);
+
+  Map<String, Object?> get lastRequestBody =>
+      (server.requests.last.data as Map).cast<String, Object?>();
+
+  Future<void> dispose() async {
+    container.dispose();
+    await db.close();
+  }
+}
+
+String isoIn(Duration fromNow) {
+  final at = DateTime.now().add(fromNow);
+  return '${at.toIso8601String().split('.').first}+03:00';
+}
+
+void main() {
+  sqfliteFfiInit();
+  databaseFactory = databaseFactoryFfi;
+  tzdata.initializeTimeZones();
+  tz.setLocalLocation(tz.getLocation('Asia/Riyadh'));
+
+  Harness? h;
+
+  tearDown(() async {
+    await h?.dispose();
+    h = null;
+  });
+
+  group('الميزة: تسجيل موعد بالكلام وتذكير يرنّ من الجهاز', () {
+    test('رسالة → سيرفر → موعد محفوظ → تذكير متجدول', () async {
+      final at = isoIn(const Duration(days: 1));
+      final harness = h = await Harness.start(
+        reply: (_) => serverReply('أبشر، سجّلته.', [
+          {
+            'type': 'create',
+            'title': 'اجتماع مع أبو سعد',
+            'at': at,
+            'remind_before_minutes': 60,
+            'repeat': 'none',
+            'notes': '',
+          },
+        ]),
+      );
+
+      await harness.send('عندي اجتماع مع أبو سعد بكرة الساعة خمسة العصر');
+
+      // الموعد اتحفظ محليًا.
+      final saved = await harness.store.all();
+      expect(saved, hasLength(1));
+      expect(saved.single.title, 'اجتماع مع أبو سعد');
+
+      // والتذكير اتجدول عند النظام: قبل الموعد بساعة بالظبط.
+      expect(harness.plugin.scheduled, hasLength(1));
+      final call = harness.plugin.scheduled.single;
+      final when = call.namedArguments[#scheduledDate] as tz.TZDateTime;
+      expect(
+        when.difference(tz.TZDateTime.from(saved.single.at, tz.local)),
+        const Duration(hours: -1),
+      );
+      expect(call.namedArguments[#title], 'اجتماع مع أبو سعد');
+
+      // والرد ظهر في الشات.
+      final messages = await harness.chatStore.recent();
+      expect(messages.last.text, contains('أبشر'));
+    });
+
+    test('كذا موعد في رسالة واحدة — كلهم يتسجّلوا', () async {
+      final harness = h = await Harness.start(
+        reply: (_) => serverReply('سجّلت الاثنين.', [
+          {
+            'type': 'create',
+            'title': 'الأول',
+            'at': isoIn(const Duration(days: 1)),
+            'remind_before_minutes': 60,
+            'repeat': 'none',
+            'notes': '',
+          },
+          {
+            'type': 'create',
+            'title': 'الثاني',
+            'at': isoIn(const Duration(days: 2)),
+            'remind_before_minutes': 60,
+            'repeat': 'none',
+            'notes': '',
+          },
+        ]),
+      );
+
+      await harness.send('عندي موعدين بكرة وعقب بكرة');
+
+      expect(await harness.store.all(), hasLength(2));
+      expect(harness.plugin.scheduled, hasLength(2));
+    });
+  });
+
+  group('الميزة: التعديل والإلغاء بكلمة', () {
+    test('التعديل يغيّر الوقت ويعيد جدولة التذكير', () async {
+      final laterAt = isoIn(const Duration(days: 3));
+      var turn = 0;
+      final harness = h = await Harness.start(
+        reply: (_) {
+          turn += 1;
+          if (turn == 1) {
+            return serverReply('سجّلته.', [
+              {
+                'type': 'create',
+                'title': 'موعد الدكتور',
+                'at': isoIn(const Duration(days: 1)),
+                'remind_before_minutes': 60,
+                'repeat': 'none',
+                'notes': '',
+              },
+            ]);
+          }
+          return serverReply('أجّلته.', [
+            {'type': 'update', 'id': '{id}', 'at': laterAt},
+          ]);
+        },
+      );
+
+      await harness.send('سجّل موعد الدكتور بكرة');
+      final created = (await harness.store.all()).single;
+
+      // السيرفر الوهمي محتاج يعرف الـid الحقيقي اللي التطبيق ولّده.
+      harness.server.reply = (_) => serverReply('أجّلته.', [
+        {'type': 'update', 'id': created.id, 'at': laterAt},
+      ]);
+      await harness.send('أجّل موعد الدكتور');
+
+      final updated = await harness.store.byId(created.id);
+      expect(updated!.at.day, DateTime.parse(laterAt).day);
+
+      // التذكير اتجدول من جديد على الوقت الجديد، مش زيادة فوق القديم.
+      expect(harness.plugin.scheduled, hasLength(1));
+      expect(harness.plugin.cancelAllCount, greaterThanOrEqualTo(2));
+    });
+
+    test('«انلغى» يمسح الموعد ويشيل تذكيره', () async {
+      final harness = h = await Harness.start(
+        reply: (_) => serverReply('سجّلته.', [
+          {
+            'type': 'create',
+            'title': 'اجتماع',
+            'at': isoIn(const Duration(days: 1)),
+            'remind_before_minutes': 60,
+            'repeat': 'none',
+            'notes': '',
+          },
+        ]),
+      );
+
+      await harness.send('عندي اجتماع بكرة');
+      final created = (await harness.store.all()).single;
+
+      harness.server.reply = (_) => serverReply('انلغى.', [
+        {'type': 'delete', 'id': created.id},
+      ]);
+      await harness.send('الاجتماع انلغى');
+
+      expect(await harness.store.all(), isEmpty);
+      // كل التذكيرات اتلغت وما اتجدولش بديل.
+      expect(harness.plugin.scheduled, isEmpty);
+    });
+  });
+
+  group('الميزة: كلّم فلان — اتصال من جهات الاتصال', () {
+    test('اسم واحد مطابق → اتصال على رقمه', () async {
+      final harness = h = await Harness.start(
+        reply: (_) => serverReply('أتصل به.', [
+          {'type': 'call', 'who': 'أبو خالد'},
+        ]),
+        contacts: const [ContactMatch(name: 'أبو خالد', phone: '0501234567')],
+      );
+
+      await harness.send('كلّم أبو خالد');
+
+      expect(harness.messaging.calls, ['0501234567']);
+      // ومافيش موعد اتسجّل بالغلط.
+      expect(await harness.store.all(), isEmpty);
+    });
+
+    test('اسمين متشابهين → يسأل مين تقصد بدل ما يخمّن', () async {
+      final harness = h = await Harness.start(
+        reply: (_) => serverReply('أتصل به.', [
+          {'type': 'call', 'who': 'أبو سعد'},
+        ]),
+        contacts: const [
+          ContactMatch(name: 'أبو سعد التاجر', phone: '0501111111'),
+          ContactMatch(name: 'أبو سعد الجار', phone: '0502222222'),
+        ],
+      );
+
+      await harness.send('كلّم أبو سعد');
+
+      // ما اتصلش بحد.
+      expect(harness.messaging.calls, isEmpty);
+      // وسأل في الشات.
+      final messages = await harness.chatStore.recent();
+      expect(messages.last.text, contains('أكثر من'));
+      expect(messages.last.text, contains('التاجر'));
+      expect(messages.last.text, contains('الجار'));
+    });
+
+    test('الاسم مش موجود → يطلب الرقم', () async {
+      final harness = h = await Harness.start(
+        reply: (_) => serverReply('أتصل به.', [
+          {'type': 'call', 'who': 'أبو نواف'},
+        ]),
+      );
+
+      await harness.send('كلّم أبو نواف');
+
+      expect(harness.messaging.calls, isEmpty);
+      final messages = await harness.chatStore.recent();
+      expect(messages.last.text, contains('ما لقيت'));
+    });
+
+    test('توحيد الهمزات: «ابو خالد» يلاقي «أبو خالد»', () async {
+      final harness = h = await Harness.start(
+        reply: (_) => serverReply('أتصل.', [
+          {'type': 'call', 'who': 'ابو خالد'},
+        ]),
+        contacts: const [ContactMatch(name: 'أبو خالد', phone: '0501234567')],
+      );
+
+      await harness.send('كلم ابو خالد');
+      expect(harness.messaging.calls, ['0501234567']);
+    });
+  });
+
+  group('الميزة: ابعت واتساب والرسالة جاهزة', () {
+    test('الرقم يتحوّل لصيغة دولية والنص يوصل زي ما هو', () async {
+      final harness = h = await Harness.start(
+        reply: (_) => serverReply('ببعث له.', [
+          {
+            'type': 'message',
+            'who': 'سعد',
+            'channel': 'whatsapp',
+            'text': 'تأخرت شوي',
+            'at': null,
+          },
+        ]),
+        contacts: const [ContactMatch(name: 'سعد', phone: '0551234567')],
+      );
+
+      await harness.send('ابعت لسعد على الواتس قل له تأخرت شوي');
+
+      expect(harness.messaging.whatsapps, [('966551234567', 'تأخرت شوي')]);
+    });
+
+    test('رسالة مجدولة تتحوّل لتذكير في وقتها مش إرسال فوري', () async {
+      final at = isoIn(const Duration(hours: 20));
+      final harness = h = await Harness.start(
+        reply: (_) => serverReply('أبشر، أرسلها بكرة الصبح.', [
+          {
+            'type': 'message',
+            'who': 'سعد',
+            'channel': 'whatsapp',
+            'text': 'صباح الخير، موعدنا اليوم',
+            'at': at,
+          },
+        ]),
+        contacts: const [ContactMatch(name: 'سعد', phone: '0551234567')],
+      );
+
+      await harness.send('ابعت لسعد بكرة الصبح صباح الخير');
+
+      // ما انبعتش حالًا.
+      expect(harness.messaging.whatsapps, isEmpty);
+      // اتخزّنت كموعد بنص الرسالة، وتذكيرها في وقت الإرسال نفسه.
+      final saved = (await harness.store.all()).single;
+      expect(saved.title, contains('سعد'));
+      expect(saved.notes, 'صباح الخير، موعدنا اليوم');
+      expect(saved.remindBeforeMinutes, 0);
+      expect(harness.plugin.scheduled, hasLength(1));
+    });
+  });
+
+  group('الوعد: جهات الاتصال والأرقام ما تطلع من الجهاز أبدًا', () {
+    test('جسم الطلب ما فيه ولا رقم تليفون حتى مع مواعيد وتاريخ', () async {
+      final harness = h = await Harness.start(
+        contacts: const [ContactMatch(name: 'أبو سعد', phone: '0501234567')],
+      );
+
+      // مواعيد موجودة بتتبعت كسياق — نتأكد إنها ما تجرش أرقام معاها.
+      await harness.store.applyActions([]);
+      await harness.send('وش عندي بكرة؟');
+
+      final body = jsonEncode(harness.lastRequestBody);
+      expect(body.contains('0501234567'), isFalse);
+      expect(body.contains('966'), isFalse);
+      expect(harness.lastRequestBody.keys.toSet(), {
+        'message',
+        'now',
+        'timezone',
+        'appointments',
+        'history',
+      });
+    });
+
+    test('التوكن في الهيدر والوقت معاه فرق التوقيت', () async {
+      final harness = h = await Harness.start();
+      await harness.send('مرحبا');
+
+      final request = harness.server.requests.last;
+      expect(request.headers['Authorization'], 'Bearer test-token');
+      expect(request.uri.path, '/api/secretary/chat');
+
+      final now = harness.lastRequestBody['now'] as String;
+      expect(RegExp(r'[+-]\d{2}:\d{2}$').hasMatch(now), isTrue, reason: now);
+    });
+  });
+
+  group('الميزة: المواعيد المتكررة', () {
+    test('أسبوعي يتجدول بمطابقة اليوم والساعة', () async {
+      final harness = h = await Harness.start(
+        reply: (_) => serverReply('كل خميس.', [
+          {
+            'type': 'create',
+            'title': 'اجتماع أسبوعي',
+            'at': isoIn(const Duration(days: 4)),
+            'remind_before_minutes': 30,
+            'repeat': 'weekly',
+            'notes': '',
+          },
+        ]),
+      );
+
+      await harness.send('اجتماع كل خميس');
+
+      final call = harness.plugin.scheduled.single;
+      expect(
+        call.namedArguments[#matchDateTimeComponents],
+        DateTimeComponents.dayOfWeekAndTime,
+      );
+    });
+  });
+
+  group('حماية: فشل الشبكة ما يضيّعش رسالة', () {
+    test('السيرفر واقع → الرسالة معلّمة فاشلة وقابلة لإعادة الإرسال', () async {
+      final harness = h = await Harness.start();
+      harness.server.reply = (_) => throw DioException(
+        requestOptions: RequestOptions(path: '/'),
+        type: DioExceptionType.connectionError,
+      );
+
+      await harness.send('عندي اجتماع بكرة');
+
+      final messages = await harness.chatStore.recent();
+      expect(messages.last.failed, isTrue);
+      expect(await harness.store.all(), isEmpty);
+
+      // السيرفر رجع → إعادة الإرسال تنجح وتشيل علامة الفشل.
+      harness.server.reply = (_) => serverReply('تم.');
+      await harness.container.read(chatProvider.notifier).retry(messages.last);
+      final after = await harness.chatStore.recent();
+      expect(after.any((m) => m.failed), isFalse);
+    });
+  });
+
+  group('حماية: حد الـ٦٤ إشعار على آيفون', () {
+    test('٦٠ موعد → أقرب ٥٠ بس بيتجدولوا', () async {
+      final harness = h = await Harness.start(
+        reply: (_) => serverReply('تم.', [
+          for (var day = 1; day <= 60; day++)
+            {
+              'type': 'create',
+              'title': 'موعد $day',
+              'at': isoIn(Duration(days: day)),
+              'remind_before_minutes': 60,
+              'repeat': 'none',
+              'notes': '',
+            },
+        ]),
+      );
+
+      await harness.send('سجّل كل المواعيد دي');
+
+      expect(await harness.store.all(), hasLength(60));
+      expect(harness.plugin.scheduled, hasLength(50));
+      // الأقرب هو اللي اتجدول، مش عشوائي.
+      final titles = harness.plugin.scheduled
+          .map((c) => c.namedArguments[#title] as String)
+          .toList();
+      expect(titles.first, 'موعد 1');
+      expect(titles, isNot(contains('موعد 51')));
+    });
+  });
+
+  group('شريط تحذير الأذونات', () {
+    Future<void> pump(WidgetTester tester, StubScheduler scheduler) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [schedulerProvider.overrideWithValue(scheduler)],
+          child: const MaterialApp(
+            home: Scaffold(body: PermissionGate(child: SizedBox())),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('الإشعارات مرفوضة → تحذير أحمر ظاهر', (tester) async {
+      final scheduler = StubScheduler(granted: false, exact: true);
+      await pump(tester, scheduler);
+
+      expect(find.textContaining('التذكيرات ما راح ترنّ'), findsOneWidget);
+      // والإذن اتطلب لوحده أول ما الشاشة فتحت — مش مستني زرار.
+      expect(scheduler.requestCount, greaterThanOrEqualTo(1));
+    });
+
+    testWidgets('الجدولة الدقيقة مقفولة → تحذير التأخير', (tester) async {
+      await pump(tester, StubScheduler(granted: true, exact: false));
+
+      expect(find.textContaining('ممكن يتأخر'), findsOneWidget);
+    });
+
+    testWidgets('كل الأذونات تمام → مافيش أي تحذير', (tester) async {
+      await pump(tester, StubScheduler(granted: true, exact: true));
+
+      expect(find.textContaining('اضغط للتفعيل'), findsNothing);
+    });
+  });
+}
