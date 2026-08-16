@@ -1,7 +1,9 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:timezone/timezone.dart' as tz;
 
 import '../api/api_client.dart';
+import '../data/chat_store.dart';
 import '../models/appointment.dart';
 import '../models/chat_message.dart';
 import '../models/server_action.dart';
@@ -88,21 +90,38 @@ class ChatController extends AsyncNotifier<ChatState> {
           .where((a) => !a.isScheduledMessage)
           .toList();
 
+      // الأوامر بتتنفّذ واحد واحد وأي عطل بيتحوّل لملاحظة في الشات بدل ما
+      // يطيّح الرسالة كلها: قبل كده استثناء من الجدولة (زي منع «الجدولة
+      // الدقيقة») كان بيسيب الشات معلّق على «يكتب…» للأبد والرد يضيع.
+      final notes = <String>[];
+
       if (immediate.isNotEmpty || scheduled.isNotEmpty) {
         await ref.read(appointmentStoreProvider).applyActions([
           ...immediate,
           ...scheduled.map(_asAppointment),
         ]);
-        // إعادة الجدولة جزء من refresh — أي ميعاد اتغيّر لازم تذكيره يتظبّط.
-        await ref.read(appointmentsProvider.notifier).refresh();
+        try {
+          // إعادة الجدولة جزء من refresh — أي ميعاد اتغيّر لازم تذكيره يتظبّط.
+          await ref.read(appointmentsProvider.notifier).refresh();
+        } on Exception catch (e) {
+          debugPrint('فشلت إعادة الجدولة: $e');
+          notes.add(
+            'سجّلت الموعد بس ما قدرت أضبط رنّة التذكير — '
+            'افتح «مواعيدي» عشان أحاول من جديد.',
+          );
+        }
       }
 
       // الاتصال والإرسال الفوري بيتنفّذوا على الجهاز، ونتيجتهم بتتعرض في الشات
       // عشان صاحب العمل يعرف إيش صار — خصوصًا لو الاسم طابق أكثر من واحد.
-      final notes = <String>[];
       for (final action in immediate) {
-        final outcome = await ref.read(actionRunnerProvider).run(action);
-        if (outcome != null) notes.add(outcome.message);
+        try {
+          final outcome = await ref.read(actionRunnerProvider).run(action);
+          if (outcome != null) notes.add(outcome.message);
+        } on Exception catch (e) {
+          debugPrint('فشل تنفيذ أمر ${action.type.name}: $e');
+          notes.add('ما قدرت أنفّذ ${_actionLabel(action)}.');
+        }
       }
 
       final reply = await chatStore.add(
@@ -128,21 +147,48 @@ class ChatController extends AsyncNotifier<ChatState> {
         latest.copyWith(messages: [...latest.messages, reply], sending: false),
       );
     } on ApiException catch (e) {
-      // رسالة المستخدم بتفضل معلّمة بإنها فشلت عشان يقدر يعيد إرسالها.
-      await chatStore.setFailed(sent.id, failed: true);
-
-      final latest = state.value ?? current;
-      state = AsyncValue.data(
-        latest.copyWith(
-          messages: [
-            for (final m in latest.messages)
-              if (m.id == sent.id) m.copyWith(failed: true) else m,
-          ],
-          sending: false,
-          error: e.message,
-        ),
+      await _markFailed(chatStore, sent, current, e.message);
+    } on Exception catch (e) {
+      // أي عطل غير متوقع (قاعدة بيانات، إضافة نظام…) — نفس المعاملة:
+      // الرسالة تتعلّم فاشلة وقابلة لإعادة الإرسال. من غير المسكة دي
+      // الاستثناء كان بيسيب sending عالقة على true والشات يتجمّد.
+      debugPrint('خطأ غير متوقع في الإرسال: $e');
+      await _markFailed(
+        chatStore,
+        sent,
+        current,
+        'صار خلل غير متوقع. جرّب مرة ثانية.',
       );
     }
+  }
+
+  /// وصف قصير لأمر جهاز — بيتستخدم في رسالة الفشل.
+  String _actionLabel(ServerAction action) => switch (action.type) {
+    ActionType.call => 'الاتصال بـ${action.who}',
+    ActionType.message => 'الرسالة لـ${action.who}',
+    _ => 'الطلب',
+  };
+
+  /// رسالة المستخدم بتفضل معلّمة بإنها فشلت عشان يقدر يعيد إرسالها.
+  Future<void> _markFailed(
+    ChatStore chatStore,
+    ChatMessage sent,
+    ChatState current,
+    String errorMessage,
+  ) async {
+    await chatStore.setFailed(sent.id, failed: true);
+
+    final latest = state.value ?? current;
+    state = AsyncValue.data(
+      latest.copyWith(
+        messages: [
+          for (final m in latest.messages)
+            if (m.id == sent.id) m.copyWith(failed: true) else m,
+        ],
+        sending: false,
+        error: errorMessage,
+      ),
+    );
   }
 
   /// مواعيد السكرتير + أحداث تقويم الجهاز في الأسبوعين الجايين، عشان يقدر

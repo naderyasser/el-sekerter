@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:timezone/data/latest_all.dart' as tzdata;
@@ -115,12 +116,22 @@ class ReminderScheduler {
   }
 
   Future<void> _createAndroidChannel() async {
+    // القناة القديمة كانت بصوت الإشعارات العادي — بيتكتم مع الصامت وعدم
+    // الإزعاج. إعدادات القناة بتتجمّد بعد الإنشاء، فالتغيير محتاج قناة
+    // جديدة ومسح القديمة عشان ما يظهرش اتنين في إعدادات النظام.
+    await _android?.deleteNotificationChannel(
+      channelId: AppConfig.legacyReminderChannelId,
+    );
     await _android?.createNotificationChannel(
       const AndroidNotificationChannel(
         AppConfig.reminderChannelId,
         AppConfig.reminderChannelName,
         description: AppConfig.reminderChannelDescription,
         importance: Importance.max,
+        // الصوت يطلع من قناة المنبّه: بيرنّ حتى والجوال صامت أو على وضع
+        // عدم الإزعاج (المنبّهات مستثناة منه افتراضيًا). ده وعد التطبيق
+        // الأساسي: «التنبيه يوصلك حتى والجوال صامت».
+        audioAttributesUsage: AudioAttributesUsage.alarm,
       ),
     );
   }
@@ -171,6 +182,16 @@ class ReminderScheduler {
   Future<void> rescheduleAll(List<Appointment> appointments) async {
     await _plugin.cancelAll();
 
+    // الجدولة الدقيقة إذن منفصل من أندرويد ١٢، وبعض الأجهزة بتسحبه من ورا
+    // المستخدم. الحزمة **بترمي استثناء** لو اتطلبت جدولة دقيقة من غيره —
+    // وقبل التصليح ده كان بيوقّع rescheduleAll كلها بعد cancelAll: كل
+    // التذكيرات تتمسح ولا واحد يتجدول، في صمت كامل. تذكير بيتأخر دقايق
+    // (غير دقيق) أهون بكتير من تذكير مش موجود أصلًا.
+    final exact = await exactAlarmAllowed();
+    final mode = exact
+        ? AndroidScheduleMode.exactAllowWhileIdle
+        : AndroidScheduleMode.inexactAllowWhileIdle;
+
     final now = DateTime.now();
     final due =
         appointments
@@ -182,7 +203,7 @@ class ReminderScheduler {
           ..sort((a, b) => a.remindAt.compareTo(b.remindAt));
 
     for (final appointment in due.take(AppConfig.maxScheduledReminders)) {
-      await _schedule(appointment);
+      await _schedule(appointment, mode);
     }
 
     if (due.length > AppConfig.maxScheduledReminders) {
@@ -192,7 +213,7 @@ class ReminderScheduler {
       );
     }
 
-    await _scheduleMorningSummaries(appointments, now);
+    await _scheduleMorningSummaries(appointments, now, mode);
   }
 
   /// ملخص الصبح: أي يوم في الأسبوع الجاي فيه مواعيد، بياخد إشعار الساعة
@@ -203,6 +224,7 @@ class ReminderScheduler {
   Future<void> _scheduleMorningSummaries(
     List<Appointment> appointments,
     DateTime now,
+    AndroidScheduleMode mode,
   ) async {
     // الحساب كله بمنطقة الجدولة (tz.local) مش بتوقيت نظام التشغيل — على
     // الجهاز هما نفس الشي، لكن الخلط بينهم يزحّف الساعة لو اختلفوا.
@@ -230,39 +252,76 @@ class ReminderScheduler {
       final names = todays.take(3).map((a) => a.title).join('، ');
       final extra = todays.length > 3 ? ' وغيرهم' : '';
 
-      await _plugin.zonedSchedule(
-        id: _summaryIdBase + offset,
-        title: todays.length == 1
-            ? 'عندك موعد اليوم'
-            : 'عندك ${todays.length} مواعيد اليوم',
-        body: '$names$extra',
-        scheduledDate: fireAt,
-        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-        notificationDetails: const NotificationDetails(
-          android: AndroidNotificationDetails(
-            AppConfig.reminderChannelId,
-            AppConfig.reminderChannelName,
-            channelDescription: AppConfig.reminderChannelDescription,
-            importance: Importance.defaultImportance,
-            priority: Priority.defaultPriority,
-          ),
-          iOS: DarwinNotificationDetails(
-            presentAlert: true,
-            presentSound: false,
+      await _withFallback(
+        mode,
+        (m) => _plugin.zonedSchedule(
+          id: _summaryIdBase + offset,
+          title: todays.length == 1
+              ? 'عندك موعد اليوم'
+              : 'عندك ${todays.length} مواعيد اليوم',
+          body: '$names$extra',
+          scheduledDate: fireAt,
+          androidScheduleMode: m,
+          notificationDetails: const NotificationDetails(
+            android: AndroidNotificationDetails(
+              AppConfig.reminderChannelId,
+              AppConfig.reminderChannelName,
+              channelDescription: AppConfig.reminderChannelDescription,
+              importance: Importance.defaultImportance,
+              priority: Priority.defaultPriority,
+            ),
+            iOS: DarwinNotificationDetails(
+              presentAlert: true,
+              presentSound: false,
+            ),
           ),
         ),
       );
     }
   }
 
-  Future<void> _schedule(Appointment appointment) async {
+  Future<void> _schedule(
+    Appointment appointment, [
+    AndroidScheduleMode mode = AndroidScheduleMode.exactAllowWhileIdle,
+  ]) => _withFallback(mode, (m) => _scheduleWith(appointment, m));
+
+  /// يجدول ويتصرف في رفض «الجدولة الدقيقة» بدل ما يرمي.
+  ///
+  /// فحص الإذن ممكن يقول إن الدقيقة متاحة والنظام يرفضها لحظة التنفيذ
+  /// (بيحصل على أجهزة شاومي وأمثالها) — نعيد بغير دقيقة بدل ما نضيّع
+  /// التذكير. وأي عطل تاني في إشعار واحد بيتسجّل ويعدّي عشان ما يطيّحش
+  /// باقي التذكيرات — قبل كده كان بيوقّع rescheduleAll بعد cancelAll:
+  /// كل التذكيرات تتمسح ولا واحد يتجدول، في صمت كامل.
+  Future<void> _withFallback(
+    AndroidScheduleMode mode,
+    Future<void> Function(AndroidScheduleMode mode) schedule,
+  ) async {
+    try {
+      await schedule(mode);
+    } on PlatformException catch (e) {
+      if (e.code == 'exact_alarms_not_permitted' &&
+          mode == AndroidScheduleMode.exactAllowWhileIdle) {
+        await _withFallback(
+          AndroidScheduleMode.inexactAllowWhileIdle,
+          schedule,
+        );
+        return;
+      }
+      debugPrint('تعذّرت جدولة إشعار: ${e.code}');
+    }
+  }
+
+  Future<void> _scheduleWith(
+    Appointment appointment,
+    AndroidScheduleMode mode,
+  ) async {
     await _plugin.zonedSchedule(
       id: _notificationId(appointment.id),
       title: appointment.title,
       body: _body(appointment),
       scheduledDate: tz.TZDateTime.from(appointment.remindAt, tz.local),
       payload: appointment.id,
-      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+      androidScheduleMode: mode,
       matchDateTimeComponents: _repeatComponent(appointment.repeat),
       notificationDetails: const NotificationDetails(
         android: AndroidNotificationDetails(
@@ -271,7 +330,11 @@ class ReminderScheduler {
           channelDescription: AppConfig.reminderChannelDescription,
           importance: Importance.max,
           priority: Priority.high,
-          category: AndroidNotificationCategory.reminder,
+          // فئة منبّه + ملء الشاشة + صوت المنبّه: التذكير يبان ويرنّ زي
+          // منبّه حقيقي حتى والشاشة مقفولة أو الجوال صامت.
+          category: AndroidNotificationCategory.alarm,
+          fullScreenIntent: true,
+          audioAttributesUsage: AudioAttributesUsage.alarm,
           // «تم» و«أجّل» من الإشعار نفسه — من غير ما يفتح التطبيق.
           // showsUserInterface بيوصّل الضغطة للتطبيق وهو صاحي، وده أضمن
           // طريق من معالج الخلفية اللي بيتقتل على أجهزة كتير.

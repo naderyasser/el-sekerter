@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import zoneinfo
 from typing import Any
 
 from django.conf import settings
@@ -29,9 +30,11 @@ from .providers import (
 
 logger = logging.getLogger(__name__)
 
-# حد أمان للحلقة. رسالة عادية بتخلص في لفّة أو اتنين؛ اللي بيوصل لـ4 غالبًا
-# موديل بيلف حوالين نفسه، وأحسن نوقفه بدل ما نفضل ندفع.
-MAX_TURNS = 4
+# حد أمان للحلقة. مزوّد بيبعت الأدوات واحدة واحدة (مش متوازية) بياكل لفّة
+# لكل موعد + لفّة للرد النصي — الأربعة كانت بتقصقص «سجّل لي أربع مواعيد»
+# عند التالت. تمنية بتغطي ست مواعيد متتالية مع لفّة تصحيح؛ اللي بيعدّيها
+# غالبًا موديل بيلف حوالين نفسه، وأحسن نوقفه بدل ما نفضل ندفع.
+MAX_TURNS = 8
 
 # آخر كام رسالة من التاريخ بتتبعت. بيحدّ التكلفة ويخلّي السياق مركّز.
 # لازم تساوي AppConfig.historyWindow في app/lib/core/config.dart.
@@ -45,8 +48,17 @@ REFUSAL_REPLY = "معليش، ما قدرت أتعامل مع هذا الطلب.
 BrainUnavailable = ProviderError
 
 
-def _validate_at(value: Any) -> str | None:
-    """يتأكد إن الوقت اللي طلعه الموديل ISO 8601 صالح ومعاه فرق توقيت."""
+def _normalise_at(payload: dict[str, Any], timezone: str) -> str | None:
+    """
+    يتأكد إن payload["at"] وقت ISO 8601 صالح، ويكمّل فرق التوقيت لو ناقص.
+
+    الموديل كتير بيكتب «2026-08-17T17:00:00» من غير فرق توقيت. الرفض هنا
+    كان أغلى غلطة في السيرفر: في الوضع النصّي مافيش لفّة تصحيح فالموعد
+    بيتشال **في صمت** — الموديل يقول «أبشر سجّلتهم» والتالت مش موجود.
+    وفي وضع الأدوات بيحرق لفّة تصحيح على حاجة إحنا عارفين إجابتها أصلًا:
+    المنطقة الزمنية جاية مع الطلب نفسه، فنكمّلها بدالـه.
+    """
+    value = payload.get("at")
     if not isinstance(value, str):
         return "الوقت لازم يكون نص بصيغة ISO 8601."
     try:
@@ -57,7 +69,11 @@ def _validate_at(value: Any) -> str | None:
             "المطلوب زي 2026-08-16T17:30:00+03:00."
         )
     if parsed.tzinfo is None:
-        return f"«{value}» ناقصها فرق التوقيت. زِد +03:00 مثلًا."
+        try:
+            zone = zoneinfo.ZoneInfo(timezone)
+        except (zoneinfo.ZoneInfoNotFoundError, ValueError, KeyError):
+            return f"«{value}» ناقصها فرق التوقيت. زِد +03:00 مثلًا."
+        payload["at"] = parsed.replace(tzinfo=zone).isoformat()
     return None
 
 
@@ -101,19 +117,19 @@ def _missing_id_message(known_ids: set[str]) -> str:
 
 
 def _check_tool_input(
-    name: str, payload: dict[str, Any], known_ids: set[str]
+    name: str, payload: dict[str, Any], known_ids: set[str], timezone: str
 ) -> str | None:
     """يرجّع رسالة خطأ للموديل، أو None لو الاستدعاء سليم."""
     if name == "create_appointment":
         if not str(payload.get("title") or "").strip():
             return "العنوان مطلوب وما ينفع يكون فاضي."
-        return _validate_at(payload.get("at"))
+        return _normalise_at(payload, timezone)
 
     if name == "update_appointment":
         if payload.get("id") not in known_ids:
             return _missing_id_message(known_ids)
         if payload.get("at") is not None:
-            return _validate_at(payload.get("at"))
+            return _normalise_at(payload, timezone)
         return None
 
     if name in ("delete_appointment", "complete_appointment"):
@@ -136,7 +152,7 @@ def _check_tool_input(
             return error
         # at اختياري: null = ابعت حالًا.
         if payload.get("at") is not None:
-            return _validate_at(payload.get("at"))
+            return _normalise_at(payload, timezone)
         return None
 
     return f"أداة غير معروفة: {name}"
@@ -172,7 +188,7 @@ def chat(
     if settings.SEKERTER_TOOLS == "text":
         return _text_mode(
             provider, instructions=INSTRUCTIONS, context=context,
-            turns=turns, known_ids=known_ids,
+            turns=turns, known_ids=known_ids, timezone=timezone,
         )
 
     specs = tool_defs.tool_specs()
@@ -196,7 +212,9 @@ def chat(
 
         results: list[ToolResult] = []
         for call in reply.tool_calls:
-            error = _check_tool_input(call.name, call.arguments, known_ids)
+            error = _check_tool_input(
+                call.name, call.arguments, known_ids, timezone
+            )
             if error:
                 results.append(
                     ToolResult(call_id=call.id, content=error, is_error=True)
@@ -228,6 +246,7 @@ def _text_mode(
     context: str,
     turns: list[Turn],
     known_ids: set[str],
+    timezone: str,
 ) -> dict[str, Any]:
     """
     الأوامر بتيجي كـJSON جوّه نص الرد بدل استدعاء أدوات.
@@ -253,7 +272,9 @@ def _text_mode(
 
     actions: list[dict[str, Any]] = []
     for call in calls:
-        error = _check_tool_input(call["name"], call["input"], known_ids)
+        error = _check_tool_input(
+            call["name"], call["input"], known_ids, timezone
+        )
         if error:
             logger.warning("text-mode call rejected: %s — %s", call["name"], error)
             continue
