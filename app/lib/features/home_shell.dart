@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../notifications/reminder_scheduler.dart';
 import '../state/appointments_controller.dart';
+import '../state/providers.dart';
 import 'appointments/appointments_screen.dart';
 import 'chat/chat_screen.dart';
 import 'permission_gate.dart';
@@ -28,6 +30,38 @@ class _HomeShellState extends ConsumerState<HomeShell>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+
+    // أزرار الإشعار: «تم» يقفل الموعد و«أجّل» يأخّر الرنّة ربع ساعة.
+    final scheduler = ref.read(schedulerProvider);
+    scheduler.onAction = _handleNotificationAction;
+    // ولو التطبيق اتفتح أصلًا من ضغطة على إشعار وهو مقفول.
+    scheduler.deliverLaunchAction();
+  }
+
+  Future<void> _handleNotificationAction(
+    String appointmentId,
+    String? actionId,
+  ) async {
+    final store = ref.read(appointmentStoreProvider);
+    final appointment = await store.byId(appointmentId);
+    if (appointment == null) return;
+
+    switch (actionId) {
+      case ReminderScheduler.actionDone:
+        await store.update(appointment.copyWith(done: true));
+      case ReminderScheduler.actionSnooze:
+        await store.update(
+          appointment.copyWith(
+            snoozeUntil: DateTime.now().add(ReminderScheduler.snoozeBy),
+          ),
+        );
+      default:
+        // ضغطة على جسم الإشعار — التطبيق فتح على شاشة المواعيد وكفاية.
+        if (mounted) setState(() => _index = 1);
+    }
+
+    // إعادة الجدولة عشان «أجّل» ياخد رنّته الجديدة و«تم» يلغي بتاعته.
+    await ref.read(appointmentsProvider.notifier).refresh();
   }
 
   @override

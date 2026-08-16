@@ -53,6 +53,7 @@ class Appointment {
     this.done = false,
     this.source = AppointmentSource.sekerter,
     this.calendarEventId,
+    this.snoozeUntil,
   });
 
   final String id;
@@ -67,12 +68,18 @@ class Appointment {
   /// معرّف الحدث المقابل في تقويم الجهاز، لو انضاف له.
   final String? calendarEventId;
 
+  /// «أجّل ربع ساعة» من زرار الإشعار. لما تتحدد، الرنّة الجاية في الوقت ده
+  /// بدل المحسوب — ومتخزّنة في القاعدة عشان إعادة الجدولة عند فتح التطبيق
+  /// ما تمسحش التأجيل.
+  final DateTime? snoozeUntil;
+
   /// أحداث التقويم للقراءة بس — السكرتير ما يعدّلها ولا يلغيها.
   bool get isEditable => source == AppointmentSource.sekerter;
 
   /// وقت رنّة التذكير. ممكن يكون في الماضي لو الميعاد قريب أوي — المسؤول عن
-  /// فلترة دي هو المجدول مش الموديل.
-  DateTime get remindAt => at.subtract(Duration(minutes: remindBeforeMinutes));
+  /// فلترة دي هو المجدول مش الموديل. التأجيل من الإشعار بيكسب.
+  DateTime get remindAt =>
+      snoozeUntil ?? at.subtract(Duration(minutes: remindBeforeMinutes));
 
   bool get isPast => at.isBefore(DateTime.now());
 
@@ -84,6 +91,10 @@ class Appointment {
     String? notes,
     bool? done,
     String? calendarEventId,
+    DateTime? snoozeUntil,
+    // التأجيل لازم يتشال لما وقت الموعد نفسه يتغيّر — تأجيل قديم على وقت
+    // جديد يرنّ في لحظة مالهاش معنى.
+    bool clearSnooze = false,
   }) => Appointment(
     id: id,
     title: title ?? this.title,
@@ -94,6 +105,7 @@ class Appointment {
     done: done ?? this.done,
     source: source,
     calendarEventId: calendarEventId ?? this.calendarEventId,
+    snoozeUntil: clearSnooze ? null : (snoozeUntil ?? this.snoozeUntil),
   );
 
   /// صف قاعدة البيانات المحلية.
@@ -107,6 +119,7 @@ class Appointment {
     'done': done ? 1 : 0,
     'source': source.name,
     'calendar_event_id': calendarEventId,
+    'snooze_until': snoozeUntil?.toUtc().toIso8601String(),
   };
 
   factory Appointment.fromRow(Map<String, Object?> row) => Appointment(
@@ -119,6 +132,9 @@ class Appointment {
     done: (row['done'] as int? ?? 0) == 1,
     source: AppointmentSource.parse(row['source'] as String?),
     calendarEventId: row['calendar_event_id'] as String?,
+    snoozeUntil: row['snooze_until'] == null
+        ? null
+        : DateTime.parse(row['snooze_until']! as String).toLocal(),
   );
 
   /// الشكل اللي بيتبعت للسيرفر كسياق. الوقت بيتبعت بالتوقيت المحلي بفرقه عشان

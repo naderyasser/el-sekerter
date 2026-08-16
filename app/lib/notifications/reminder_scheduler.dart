@@ -28,6 +28,24 @@ class ReminderScheduler {
 
   bool _ready = false;
 
+  /// معرّفات أزرار الإشعار. بتوصل في NotificationResponse.actionId.
+  static const String actionDone = 'done';
+  static const String actionSnooze = 'snooze';
+
+  /// كام دقيقة يتأجّل التذكير لما يضغط «أجّل».
+  static const Duration snoozeBy = Duration(minutes: 15);
+
+  /// معرّفات إشعارات ملخص الصبح بعيدة عن نطاق التذكيرات العادية.
+  static const int _summaryIdBase = 1900000000;
+
+  /// ساعة ملخص الصبح.
+  static const int _summaryHour = 6;
+  static const int _summaryMinute = 45;
+
+  /// بيتنده لما المستخدم يضغط على التذكير أو أحد أزراره.
+  /// (معرّف الموعد، معرّف الزرار أو null للضغط على جسم الإشعار).
+  void Function(String appointmentId, String? actionId)? onAction;
+
   AndroidFlutterLocalNotificationsPlugin? get _android => _plugin
       .resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin
@@ -49,21 +67,51 @@ class ReminderScheduler {
     tz.setLocalLocation(tz.getLocation(zone.identifier));
 
     await _plugin.initialize(
-      settings: const InitializationSettings(
-        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      // مش const لأن فئات آيفون بتتبني وقت التشغيل.
+      settings: InitializationSettings(
+        android: const AndroidInitializationSettings('@mipmap/ic_launcher'),
         iOS: DarwinInitializationSettings(
           // الأذونات بنطلبها صراحة في شاشة الإعداد عشان نقدر نشرح للمستخدم
           // قبل ما النظام يسأله.
           requestAlertPermission: false,
           requestBadgePermission: false,
           requestSoundPermission: false,
+          // آيفون بيعرّف أزرار الإشعار بفئات وقت التهيئة، مش مع كل إشعار.
+          notificationCategories: [
+            DarwinNotificationCategory(
+              'sekerter_reminder',
+              actions: [
+                DarwinNotificationAction.plain(actionDone, 'تم'),
+                DarwinNotificationAction.plain(actionSnooze, 'أجّل ربع ساعة'),
+              ],
+            ),
+          ],
         ),
       ),
-      onDidReceiveNotificationResponse: onTap,
+      onDidReceiveNotificationResponse: (response) {
+        final payload = response.payload;
+        if (payload == null || payload.isEmpty) return;
+        onTap?.call(response);
+        onAction?.call(payload, response.actionId);
+      },
     );
 
     await _createAndroidChannel();
     _ready = true;
+  }
+
+  /// لو التطبيق اتفتح من ضغطة على إشعار وهو كان مقفول خالص، الضغطة دي
+  /// ما بتوصلش للـcallback العادي — بتتسلّم هنا مرة واحدة عند التشغيل.
+  Future<void> deliverLaunchAction() async {
+    final details = await _plugin.getNotificationAppLaunchDetails();
+    final response = details?.notificationResponse;
+    final payload = response?.payload;
+    if (details?.didNotificationLaunchApp != true ||
+        payload == null ||
+        payload.isEmpty) {
+      return;
+    }
+    onAction?.call(payload, response?.actionId);
   }
 
   Future<void> _createAndroidChannel() async {
@@ -143,6 +191,68 @@ class ReminderScheduler {
         'الباقي هيتجدول لما الأقرب يعدّي.',
       );
     }
+
+    await _scheduleMorningSummaries(appointments, now);
+  }
+
+  /// ملخص الصبح: أي يوم في الأسبوع الجاي فيه مواعيد، بياخد إشعار الساعة
+  /// ٦:٤٥ الصبح بعددها وأساميها — عشان اليوم يبدأ والجدول في دماغه.
+  ///
+  /// بيتجدول لأيام فيها مواعيد بس، فأقصى إضافة ٧ إشعارات فوق حد الـ٥٠ —
+  /// لسه تحت حد الآيفون (٦٤).
+  Future<void> _scheduleMorningSummaries(
+    List<Appointment> appointments,
+    DateTime now,
+  ) async {
+    // الحساب كله بمنطقة الجدولة (tz.local) مش بتوقيت نظام التشغيل — على
+    // الجهاز هما نفس الشي، لكن الخلط بينهم يزحّف الساعة لو اختلفوا.
+    final localNow = tz.TZDateTime.from(now, tz.local);
+
+    for (var offset = 0; offset < 7; offset++) {
+      final fireAt = tz.TZDateTime(
+        tz.local,
+        localNow.year,
+        localNow.month,
+        localNow.day + offset,
+        _summaryHour,
+        _summaryMinute,
+      );
+      if (!fireAt.isAfter(localNow)) continue;
+
+      final todays = appointments.where((a) => !a.done).where((a) {
+        final atLocal = tz.TZDateTime.from(a.at, tz.local);
+        return atLocal.year == fireAt.year &&
+            atLocal.month == fireAt.month &&
+            atLocal.day == fireAt.day;
+      }).toList()..sort((a, b) => a.at.compareTo(b.at));
+      if (todays.isEmpty) continue;
+
+      final names = todays.take(3).map((a) => a.title).join('، ');
+      final extra = todays.length > 3 ? ' وغيرهم' : '';
+
+      await _plugin.zonedSchedule(
+        id: _summaryIdBase + offset,
+        title: todays.length == 1
+            ? 'عندك موعد اليوم'
+            : 'عندك ${todays.length} مواعيد اليوم',
+        body: '$names$extra',
+        scheduledDate: fireAt,
+        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+        notificationDetails: const NotificationDetails(
+          android: AndroidNotificationDetails(
+            AppConfig.reminderChannelId,
+            AppConfig.reminderChannelName,
+            channelDescription: AppConfig.reminderChannelDescription,
+            importance: Importance.defaultImportance,
+            priority: Priority.defaultPriority,
+          ),
+          iOS: DarwinNotificationDetails(
+            presentAlert: true,
+            presentSound: false,
+          ),
+        ),
+      );
+    }
   }
 
   Future<void> _schedule(Appointment appointment) async {
@@ -162,6 +272,21 @@ class ReminderScheduler {
           importance: Importance.max,
           priority: Priority.high,
           category: AndroidNotificationCategory.reminder,
+          // «تم» و«أجّل» من الإشعار نفسه — من غير ما يفتح التطبيق.
+          // showsUserInterface بيوصّل الضغطة للتطبيق وهو صاحي، وده أضمن
+          // طريق من معالج الخلفية اللي بيتقتل على أجهزة كتير.
+          actions: [
+            AndroidNotificationAction(
+              actionDone,
+              'تم',
+              showsUserInterface: true,
+            ),
+            AndroidNotificationAction(
+              actionSnooze,
+              'أجّل ربع ساعة',
+              showsUserInterface: true,
+            ),
+          ],
         ),
         iOS: DarwinNotificationDetails(
           presentAlert: true,
@@ -170,6 +295,8 @@ class ReminderScheduler {
           // بيخلّي الإشعار يعدّي وضع التركيز. مستوى critical (اللي بيعدّي
           // الصامت) محتاج موافقة خاصة من أبل ومش متاحة لتطبيق زي ده.
           interruptionLevel: InterruptionLevel.timeSensitive,
+          // الفئة اللي فيها أزرار «تم» و«أجّل» — معرّفة في initialize.
+          categoryIdentifier: 'sekerter_reminder',
         ),
       ),
     );

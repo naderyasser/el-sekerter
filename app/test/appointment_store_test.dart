@@ -30,7 +30,8 @@ void main() {
         notes                  TEXT    NOT NULL DEFAULT '',
         done                   INTEGER NOT NULL DEFAULT 0,
         source                 TEXT    NOT NULL DEFAULT 'sekerter',
-        calendar_event_id      TEXT
+        calendar_event_id      TEXT,
+        snooze_until           TEXT
       )
     ''');
     store = AppointmentStore(db);

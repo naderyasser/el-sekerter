@@ -7,7 +7,7 @@ class AppDatabase {
 
   final Database db;
 
-  static const int _version = 2;
+  static const int _version = 3;
 
   static Future<AppDatabase> open({String fileName = 'sekerter.db'}) async {
     final path = p.join(await getDatabasesPath(), fileName);
@@ -32,7 +32,8 @@ class AppDatabase {
         notes                  TEXT    NOT NULL DEFAULT '',
         done                   INTEGER NOT NULL DEFAULT 0,
         source                 TEXT    NOT NULL DEFAULT 'sekerter',
-        calendar_event_id      TEXT
+        calendar_event_id      TEXT,
+        snooze_until           TEXT
       )
     ''');
 
@@ -62,6 +63,10 @@ class AppDatabase {
       await db.execute(
         'ALTER TABLE appointments ADD COLUMN calendar_event_id TEXT',
       );
+    }
+    if (from < 3) {
+      // «أجّل ربع ساعة» من زرار الإشعار.
+      await db.execute('ALTER TABLE appointments ADD COLUMN snooze_until TEXT');
     }
   }
 

@@ -97,6 +97,9 @@ class AppointmentStore {
             remindBeforeMinutes: action.remindBeforeMinutes,
             repeat: action.repeat,
             notes: action.notes,
+            // وقت جديد يلغي أي تأجيل قديم — تأجيل على وقت اتغيّر يرنّ في
+            // لحظة مالهاش معنى.
+            clearSnooze: action.at != null,
           );
           await update(updated);
           touched.add(updated);
