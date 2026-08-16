@@ -91,6 +91,10 @@ def post(test, payload=None, **extra):
 
 BASE_SETTINGS = dict(
     SEKERTER_API_TOKEN="test-token",
+    # لازم يتصفّر صراحة. من غيره، .env بتاع السيرفر الحقيقي يتحمّل جوّه
+    # الاختبار ويقلب اختيار المزوّد — فتفشل اختبارات سليمة على السيرفر
+    # وتنجح على جهاز فاضي. اختبار يعتمد على البيئة اللي حواليه ما يثبت شي.
+    SEKERTER_BASE_URL="",
     SEKERTER_PROVIDER="claude",
     ANTHROPIC_API_KEY="test-key",
     DEBUG=False,
@@ -556,7 +560,10 @@ class DeepSeekEncodingTests(SimpleTestCase):
         self.assertIsNone(self.decode_call(raw))
 
 
+@override_settings(SEKERTER_BASE_URL="")
 class ProviderSelectionTests(SimpleTestCase):
+    """المسار القديم: اتصال مباشر بمزوّد سحابي، من غير عنوان مخصّص."""
+
     @override_settings(SEKERTER_PROVIDER="claude", ANTHROPIC_API_KEY="k")
     def test_claude_is_selected(self):
         from .providers import get_provider
@@ -667,6 +674,7 @@ class BaseUrlSelectionTests(SimpleTestCase):
 
 @override_settings(
     SEKERTER_API_TOKEN="test-token",
+    SEKERTER_BASE_URL="",
     SEKERTER_PROVIDER="deepseek",
     DEEPSEEK_API_KEY="",
     DEBUG=False,
