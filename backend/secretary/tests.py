@@ -582,6 +582,89 @@ class ProviderSelectionTests(SimpleTestCase):
             get_provider()
 
 
+class BaseUrlSelectionTests(SimpleTestCase):
+    """
+    الطريقة اللي المفروض الواحد يستخدمها: عنوان ومفتاح، من غير أسماء شركات.
+
+    اللي يهم هنا إن العنوان لما يتحط يكون هو الحاكم — لو SEKERTER_PROVIDER
+    القديم فضل مأثّر، الطلب يروح لسيرفر تاني خالص من غير ما حد ياخد باله.
+    """
+
+    URL = "https://example.invalid"
+
+    @override_settings(
+        SEKERTER_BASE_URL=URL,
+        SEKERTER_API_KEY="k",
+        SEKERTER_FORMAT="messages",
+        SEKERTER_MODEL="deepseek-chat",
+    )
+    def test_messages_format_builds_messages_provider(self):
+        from .providers import get_provider
+
+        provider = get_provider()
+        self.assertEqual(provider.name, "claude")
+        self.assertFalse(provider._native)
+        self.assertEqual(provider._model, "deepseek-chat")
+
+    @override_settings(
+        SEKERTER_BASE_URL=URL,
+        SEKERTER_API_KEY="k",
+        SEKERTER_FORMAT="chat",
+        SEKERTER_MODEL="my-model",
+    )
+    def test_chat_format_builds_chat_provider(self):
+        from .providers import get_provider
+
+        provider = get_provider()
+        self.assertEqual(provider.name, "deepseek")
+        self.assertEqual(provider._model, "my-model")
+
+    @override_settings(
+        SEKERTER_BASE_URL=URL,
+        SEKERTER_API_KEY="k",
+        SEKERTER_FORMAT="messages",
+        SEKERTER_MODEL="",
+        # المسار القديم مضبوط على حاجة تانية — لازم العنوان يكسبه.
+        SEKERTER_PROVIDER="deepseek",
+        DEEPSEEK_API_KEY="other",
+    )
+    def test_base_url_wins_over_legacy_provider(self):
+        from .providers import get_provider
+
+        self.assertEqual(get_provider().name, "claude")
+
+    @override_settings(
+        SEKERTER_BASE_URL=URL, SEKERTER_API_KEY="k", SEKERTER_FORMAT="grpc"
+    )
+    def test_unknown_format_raises(self):
+        from .providers import ProviderError, get_provider
+
+        with self.assertRaises(ProviderError):
+            get_provider()
+
+    @override_settings(
+        SEKERTER_BASE_URL=URL, SEKERTER_API_KEY="", SEKERTER_FORMAT="messages"
+    )
+    def test_missing_key_names_the_right_variable(self):
+        from .providers import ProviderError, get_provider
+
+        with self.assertRaises(ProviderError) as caught:
+            get_provider()
+        self.assertIn("SEKERTER_API_KEY", str(caught.exception))
+
+    @override_settings(
+        SEKERTER_BASE_URL="",
+        SEKERTER_PROVIDER="claude",
+        ANTHROPIC_API_KEY="k",
+        ANTHROPIC_BASE_URL="",
+        SEKERTER_MODEL="",
+    )
+    def test_no_base_url_falls_back_to_direct_cloud(self):
+        from .providers import get_provider
+
+        self.assertTrue(get_provider()._native)
+
+
 @override_settings(
     SEKERTER_API_TOKEN="test-token",
     SEKERTER_PROVIDER="deepseek",

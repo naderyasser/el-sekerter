@@ -61,9 +61,9 @@ class Command(BaseCommand):
         now = dt.datetime.now(dt.timezone(dt.timedelta(hours=3)))
 
         self.stdout.write("")
-        self.stdout.write(f"  المزوّد : {settings.SEKERTER_PROVIDER}")
-        self.stdout.write(f"  الموديل : {settings.SEKERTER_MODEL or '(الافتراضي)'}")
         self.stdout.write(f"  العنوان : {self._url()}")
+        self.stdout.write(f"  الصيغة  : {self._format()}")
+        self.stdout.write(f"  الموديل : {settings.SEKERTER_MODEL or '(الافتراضي)'}")
         self.stdout.write("")
 
         passed = 0
@@ -117,24 +117,37 @@ class Command(BaseCommand):
         self._verdict(passed)
 
     def _url(self) -> str:
+        if settings.SEKERTER_BASE_URL:
+            return settings.SEKERTER_BASE_URL
         if settings.SEKERTER_PROVIDER == "claude":
             return settings.ANTHROPIC_BASE_URL or "https://api.anthropic.com"
         return settings.DEEPSEEK_BASE_URL or "https://api.deepseek.com"
 
-    def _unreachable(self) -> None:
-        """فشل اتصال — مو فشل موديل. الفرق مهم عشان ما تدوّر في المكان الغلط."""
-        key = (
+    def _format(self) -> str:
+        if settings.SEKERTER_BASE_URL:
+            return settings.SEKERTER_FORMAT
+        return "messages" if settings.SEKERTER_PROVIDER == "claude" else "chat"
+
+    def _key_name(self) -> str:
+        if settings.SEKERTER_BASE_URL:
+            return "SEKERTER_API_KEY"
+        return (
             "ANTHROPIC_API_KEY"
             if settings.SEKERTER_PROVIDER == "claude"
             else "DEEPSEEK_API_KEY"
         )
+
+    def _unreachable(self) -> None:
+        """فشل اتصال — مو فشل موديل. الفرق مهم عشان ما تدوّر في المكان الغلط."""
+        other = "chat" if self._format() == "messages" else "messages"
         self.stdout.write(
             self.style.ERROR(
-                "  ما فيه اتصال بالموديل — المشكلة في العنوان أو المفتاح،\n"
-                "  مو في الموديل نفسه. تأكد من:\n"
+                "  ما فيه اتصال بالموديل — المشكلة في العنوان أو المفتاح أو\n"
+                "  الصيغة، مو في الموديل نفسه. تأكد من:\n"
                 f"    • السيرفر شغّال فعلًا على {self._url()}\n"
                 "    • الجهاز اللي عليه Django يوصل للعنوان ده\n"
-                f"    • {key} هو مفتاح سيرفرك"
+                f"    • {self._key_name()} هو مفتاح سيرفرك\n"
+                f"    • لو الرد ٤٠٤، جرّب SEKERTER_FORMAT={other}"
             )
         )
         self.stdout.write("")
