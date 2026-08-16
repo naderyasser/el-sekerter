@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 
 import '../core/config.dart';
+import '../core/time.dart';
 import '../data/settings_store.dart';
 import '../models/appointment.dart';
 import '../models/chat_message.dart';
@@ -46,7 +47,7 @@ class ApiClient {
         data: {
           'message': message,
           // وقت الجهاز هو مرجع الموديل في «بكرة» و«بعد ساعتين».
-          'now': DateTime.now().toIso8601String(),
+          'now': isoWithOffset(DateTime.now()),
           'timezone': timezone,
           'appointments': appointments
               .map((a) => a.toApi())
