@@ -144,6 +144,18 @@ void main() {
       expect(ArabicDate.day(DateTime(2026, 8, 14, 9), now: now), 'أمس');
     });
 
+    test('المواعيد البعيدة بيظهر معاها اسم اليوم', () {
+      // صاحب العمل قال «الأحد الجاي» — «٣٠ أغسطس» لوحدها ما تخليه يتأكد.
+      // الموديل بيغلط في أيام الأسبوع، وده آخر مكان يمسك فيه الغلط.
+      final far = ArabicDate.day(DateTime(2026, 8, 30, 9), now: now);
+      expect(far, contains('الأحد'));
+      expect(far, contains('30'));
+    });
+
+    test('جوّه الأسبوع اسم اليوم يكفي', () {
+      expect(ArabicDate.day(DateTime(2026, 8, 20, 9), now: now), 'الخميس');
+    });
+
     test('الوقت بصيغة ١٢ ساعة مع ص/م', () {
       expect(ArabicDate.time(DateTime(2026, 8, 16, 17, 30)), contains('م'));
       expect(ArabicDate.time(DateTime(2026, 8, 16, 9, 0)), contains('ص'));

@@ -6,7 +6,10 @@ class ArabicDate {
   const ArabicDate._();
 
   static final DateFormat _time = DateFormat('h:mm', 'ar');
-  static final DateFormat _dayMonth = DateFormat('d MMMM', 'ar');
+  // اسم اليوم مع التاريخ مقصود: صاحب العمل قال «الأحد الجاي» وما يقدر
+  // يتأكد من «٢٣ أغسطس» لوحدها. الموديل بيغلط في أيام الأسبوع أحيانًا،
+  // والسطر ده هو آخر فرصة يمسك الغلط قبل ما يفوت الموعد.
+  static final DateFormat _dayMonth = DateFormat('EEEE d MMMM', 'ar');
   static final DateFormat _weekday = DateFormat('EEEE', 'ar');
   static final DateFormat _full = DateFormat('EEEE d MMMM y', 'ar');
 
