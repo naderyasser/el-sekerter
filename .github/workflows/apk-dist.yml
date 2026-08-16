@@ -1,0 +1,148 @@
+name: بناء APK ودفعه في dist
+
+# بيئة Claude Code البعيدة محجوبة عن dl.google.com، فمفيش طريقة تنزّل بيها
+# Android SDK محليًا. الرَنَر بتاع GitHub عنده الـSDK وشبكة مفتوحة، فالبناء
+# بيتم هنا والناتج بيترجع للريبو في dist/ على نفس الفرع.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [apk-dist]
+    # من غير paths-ignore عشان كوميت فاضي يقدر يعيد التشغيل. اللوب مقفول
+    # من ناحيتين: كوميت الرَنَر فيه [skip ci]، وGitHub أصلًا ما بيعيدش
+    # تشغيل الworkflows على دفعات بتوكن GITHUB_TOKEN.
+
+concurrency:
+  group: apk-dist
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: apk-dist
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: نسخ الأدوات
+        run: |
+          flutter --version
+          java -version
+
+      - name: تنزيل الحزم
+        working-directory: app
+        run: flutter pub get
+
+      - name: الاختبارات
+        working-directory: app
+        run: |
+          set -o pipefail
+          out="$RUNNER_TEMP/test-output.txt"
+          # الgate الأساسي: لو أي اختبار فشل، flutter test نفسه بيرجع كود
+          # غير صفر وpipefail بيوقّف الخطوة هنا.
+          flutter test 2>&1 | tee "$out"
+
+          # العدّ ثانوي للتوثيق. flutter بيطبع بصيغتين حسب وجود TTY:
+          #   من غير TTY (زي هنا): "🎉 77 tests passed."
+          #   مع TTY (محليًا):      "00:05 +77: All tests passed!"
+          # لازم || true على كل grep — من غير كده أول grep مايلاقيش بيرجع
+          # كود 1 وbash -e بتاع GitHub بيقتل الخطوة قبل أي تحقق.
+          passed=$(grep -oE '[0-9]+ tests? passed' "$out" \
+            | grep -oE '^[0-9]+' | tail -1 || true)
+          if [ -z "$passed" ]; then
+            passed=$(grep -oE '\+[0-9]+' "$out" | tr -d '+' \
+              | sort -n | tail -1 || true)
+          fi
+          passed=${passed:-0}
+
+          echo "عدد الاختبارات الناجحة: $passed"
+          echo "TESTS_PASSED=$passed" >> "$GITHUB_ENV"
+          if [ "$passed" -lt 82 ]; then
+            echo "::error::المتوقع 82 اختبار على الأقل، الناجح $passed"
+            exit 1
+          fi
+
+      - name: بناء APK
+        working-directory: app
+        run: |
+          flutter build apk --release \
+            --dart-define=API_BASE_URL=https://el-sekerter.meena-alaqariya.com
+
+      - name: تجهيز dist
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp app/build/app/outputs/flutter-apk/app-release.apk dist/sekerter.apk
+          ( cd dist && sha256sum sekerter.apk > sekerter.apk.sha256 )
+
+          sha=$(cut -d' ' -f1 dist/sekerter.apk.sha256)
+          size=$(du -h dist/sekerter.apk | cut -f1)
+          built_at=$(date -u '+%Y-%m-%d %H:%M UTC')
+
+          rm -f dist/BUILD_FAILED.md
+
+          cat > dist/README.md <<EOF
+          # السكرتير الخاص — نسخة أندرويد
+
+          نزّل sekerter.apk وابعته على الواتس.
+
+          | | |
+          |---|---|
+          | تاريخ البناء | ${built_at} |
+          | الكوميت | \`${GITHUB_SHA}\` |
+          | SHA256 | \`${sha}\` |
+          | الحجم | ${size} |
+          | الاختبارات | ${TESTS_PASSED}/${TESTS_PASSED} ناجحة |
+          | عنوان السيرفر | https://el-sekerter.meena-alaqariya.com |
+
+          ## التثبيت
+
+          1. نزّل \`sekerter.apk\` على الموبايل.
+          2. لو ظهرت رسالة «مصادر غير معروفة»، اسمح للمتصفح أو لتطبيق الملفات
+             بتثبيت التطبيقات، وبعدين كمّل.
+          3. افتح التطبيق — هيكون موصول على السيرفر على طول.
+
+          ## التحقق من الملف
+
+          \`\`\`
+          sha256sum -c sekerter.apk.sha256
+          \`\`\`
+
+          ## ملاحظات
+
+          - النسخة موقّعة بمفاتيح الديباج (زي ما هي متظبطة في
+            \`app/android/app/build.gradle.kts\`). بتتثبّت وبتشتغل عادي، بس
+            متنفعش تترفع على Google Play من غير مفتاح إصدار حقيقي.
+          - البناء بيتعمل أوتوماتيك من \`.github/workflows/apk-dist.yml\` مع كل
+            دفعة على فرع \`apk-dist\`.
+          EOF
+
+          echo "SHA256=${sha}" >> "$GITHUB_ENV"
+
+      - name: دفع الناتج
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A dist
+          if git diff --cached --quiet; then
+            echo "مفيش تغيير في dist"
+            exit 0
+          fi
+          git commit -m "بناء APK من ${GITHUB_SHA::7} [skip ci]
+
+          الاختبارات: ${TESTS_PASSED} ناجحة
+          SHA256: ${SHA256}"
+          git push origin HEAD:apk-dist
