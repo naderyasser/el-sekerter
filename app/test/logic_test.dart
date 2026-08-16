@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:sekerter/core/arabic.dart';
+import 'package:sekerter/core/time.dart';
 import 'package:sekerter/models/appointment.dart';
 import 'package:sekerter/models/chat_message.dart';
 import 'package:sekerter/models/server_action.dart';
@@ -179,6 +180,33 @@ void main() {
       expect(ArabicDate.reminderLead(1440), 'التذكير قبله بيوم');
       expect(ArabicDate.reminderLead(0), 'التذكير في وقت الموعد');
       expect(ArabicDate.reminderLead(15), 'التذكير قبله بـ 15 دقيقة');
+    });
+  });
+
+  /// الوقت اللي بيتبعت للسيرفر لازم يحمل فرق التوقيت.
+  ///
+  /// من غيره الموديل بيخمّن المنطقة الزمنية، والتخمين بيتكسر قرب منتصف
+  /// الليل: «بكرة» تطلع النهاردة، والموعد يتسجّل في يوم فات، والتذكير
+  /// ما يرنّش أبدًا.
+  group('صيغة الوقت المرسل للسيرفر', () {
+    test('فرق التوقيت موجود', () {
+      final iso = isoWithOffset(DateTime(2026, 8, 16, 17, 30));
+      expect(RegExp(r'[+-]\d{2}:\d{2}$').hasMatch(iso), isTrue, reason: iso);
+    });
+
+    test('من غير ملّي ثانية', () {
+      final iso = isoWithOffset(DateTime(2026, 8, 16, 17, 30));
+      expect(iso.contains('.'), isFalse, reason: iso);
+    });
+
+    test('التاريخ والساعة ما اتغيروش', () {
+      final iso = isoWithOffset(DateTime(2026, 8, 16, 17, 30));
+      expect(iso, startsWith('2026-08-16T17:30:00'));
+    });
+
+    test('يتقرا كتاريخ صالح تاني', () {
+      final iso = isoWithOffset(DateTime(2026, 8, 16, 23, 40));
+      expect(DateTime.parse(iso).toLocal().hour, 23);
     });
   });
 }
