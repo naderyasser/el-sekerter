@@ -108,6 +108,20 @@ class HealthTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "ok"})
 
+    def test_urls_match_what_the_app_calls(self):
+        """
+        العناوين متكتوبة نصًا في التطبيق (api_client.dart) وفي التوثيق،
+        وأي تغيير هنا يكسر الاتنين بصمت — الموبايل يرجّع 404 والمستخدم
+        يشوف «الخدمة مش شغالة» من غير أي أثر في اللوج.
+
+        الشرطة في الآخر فرق حقيقي: Django بيرجّع 404 معاها.
+        """
+        from django.urls import reverse
+
+        self.assertEqual(reverse("health"), "/api/secretary/health")
+        self.assertEqual(reverse("chat"), "/api/secretary/chat")
+        self.assertEqual(self.client.get("/api/secretary/health/").status_code, 404)
+
 
 @override_settings(**BASE_SETTINGS)
 class AuthTests(SimpleTestCase):
