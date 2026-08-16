@@ -34,10 +34,13 @@ logger = logging.getLogger(__name__)
 # تاني الموديل ممكن يكتبه في كلامه (زي ما يشرح شكل رسالة مثلًا).
 FENCE = "sekerter"
 
-_BLOCK = re.compile(
-    r"```" + FENCE + r"\s*(?P<body>.*?)```",
-    re.DOTALL | re.IGNORECASE,
-)
+# العلامة نفسها، بباك-تيكس أو من غيرها.
+#
+# التزمّت هنا غالي: لو الموديل كتب الأوامر صح ونسي الباك-تيكس، البلوك
+# ما يتقراش و**يتعرض لصاحب العمل كـJSON خام**. وده أسوأ من ضياع الأمر —
+# ضياع الأمر بيبان في السلوك، أما JSON في نص الرد فبيخلّي التطبيق كله
+# يبان مكسور. حصل فعلًا في أول تشغيل حقيقي.
+_MARK = re.compile(r"`{0,3}\s*" + FENCE + r"\s*`{0,3}", re.IGNORECASE)
 
 
 def instructions() -> str:
@@ -101,11 +104,19 @@ def split(reply: str) -> tuple[str, list[dict[str, Any]]]:
     ويترمى — أحسن من إننا نعرض JSON لصاحب العمل.
     """
     calls: list[dict[str, Any]] = []
+    spans: list[tuple[int, int]] = []
 
-    for match in _BLOCK.finditer(reply):
-        body = match.group("body").strip()
-        if not body:
+    for mark in _MARK.finditer(reply):
+        span = _json_after(reply, mark.end())
+        if span is None:
             continue
+
+        start, end = span
+        body = reply[start:end]
+        # الباك-تيكس اللي بتقفل السياج، لو موجودة.
+        closing = re.compile(r"\s*`{1,3}").match(reply, end)
+        spans.append((mark.start(), closing.end() if closing else end))
+
         try:
             parsed = json.loads(body)
         except ValueError:
@@ -124,8 +135,56 @@ def split(reply: str) -> tuple[str, list[dict[str, Any]]]:
             if call is not None:
                 calls.append(call)
 
-    text = _BLOCK.sub("", reply).strip()
-    return text, calls
+    text = reply
+    # من الآخر للأول عشان المواضع ما تتزحلقش.
+    for start, end in reversed(spans):
+        text = text[:start] + text[end:]
+
+    return text.strip(), calls
+
+
+def _json_after(text: str, index: int) -> tuple[int, int] | None:
+    """
+    يلقّط قيمة JSON كاملة بعد الموضع ده بعدّ الأقواس.
+
+    عدّ الأقواس بدل regex عشان البلوك ينقرا سواء اتقفل بسياج ولا لأ —
+    الموديل بينسى الباك-تيكس، وساعتها مافيش علامة نهاية نلزق عندها.
+    """
+    while index < len(text) and text[index] in " \t\r\n":
+        index += 1
+    if index >= len(text) or text[index] not in "[{":
+        return None
+
+    opening = text[index]
+    closing = "]" if opening == "[" else "}"
+    depth = 0
+    in_string = False
+    escaped = False
+
+    for position in range(index, len(text)):
+        char = text[position]
+
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == opening:
+            depth += 1
+        elif char == closing:
+            depth -= 1
+            if depth == 0:
+                return index, position + 1
+
+    # ما اتقفلش — الرد اتقطع في النص. نرجّع الباقي كله عشان يتشال من
+    # النص المعروض على الأقل، حتى لو التحليل هيفشل.
+    return index, len(text)
 
 
 def _read_call(item: Any) -> dict[str, Any] | None:

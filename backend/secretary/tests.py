@@ -1253,3 +1253,175 @@ class TextModeChatTests(SimpleTestCase):
         # مافيش حلقة في الوضع ده — نداء واحد بس.
         _, provider = self.run_chat("تمام.")
         self.assertEqual(len(provider.calls), 1)
+
+
+# ── حالات فشل حقيقية من أول تشغيل على السيرفر ──────────────────────────────
+# التلاتة دول اتشافوا في try_model على البوابة، مش مفترضين.
+
+
+class MalformedFenceTests(SimpleTestCase):
+    """
+    الموديل كتب الأوامر صح ونسي الباك-تيكس الافتتاحية.
+
+    النتيجة كانت أسوأ من ضياع الأمر: الـJSON اتعرض لصاحب العمل في نص الرد.
+    ضياع الأمر يبان في السلوك، أما JSON خام فيخلّي التطبيق كله يبان مكسور.
+    """
+
+    def split(self, reply):
+        from .text_protocol import split
+
+        return split(reply)
+
+    def test_marker_without_backticks_is_still_read(self):
+        # ده الرد الحقيقي اللي رجع من البوابة.
+        reply = (
+            "sekerter\n"
+            '[{"tool": "send_message", "input": {"who": "سعد", '
+            '"channel": "whatsapp", "text": "تأخرت شوي", "at": null}}]'
+        )
+        text, calls = self.split(reply)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["name"], "send_message")
+        # والأهم: ما اتسرّبش لصاحب العمل.
+        self.assertNotIn("tool", text)
+        self.assertNotIn("sekerter", text)
+
+    def test_marker_with_one_backtick(self):
+        _, calls = self.split(
+            '`sekerter\n[{"tool": "call_contact", "input": {"who": "سعد"}}]'
+        )
+        self.assertEqual(len(calls), 1)
+
+    def test_properly_fenced_still_works(self):
+        _, calls = self.split(
+            block('[{"tool": "call_contact", "input": {"who": "سعد"}}]')
+        )
+        self.assertEqual(len(calls), 1)
+
+    def test_text_before_the_marker_is_kept(self):
+        text, _ = self.split(
+            "أبشر، بعثتها له.\nsekerter\n"
+            '[{"tool": "call_contact", "input": {"who": "سعد"}}]'
+        )
+        self.assertEqual(text, "أبشر، بعثتها له.")
+
+    def test_unterminated_json_is_still_stripped_from_the_reply(self):
+        # الرد اتقطع في النص. الأمر ضايع، بس ما ينفعش نعرض النص المكسور.
+        text, calls = self.split(
+            'تمام.\nsekerter\n[{"tool": "call_contact", "input": {"who": "س"'
+        )
+        self.assertEqual(calls, [])
+        self.assertEqual(text, "تمام.")
+
+    def test_nested_braces_inside_message_text_do_not_end_the_block(self):
+        _, calls = self.split(
+            block(
+                '[{"tool": "send_message", "input": {"who": "سعد", '
+                '"channel": "whatsapp", "text": "قال {تمام} و[خلاص]", '
+                '"at": null}}]'
+            )
+        )
+        self.assertEqual(calls[0]["input"]["text"], "قال {تمام} و[خلاص]")
+
+    def test_quoted_bracket_does_not_end_the_block(self):
+        _, calls = self.split(
+            block(
+                '[{"tool": "send_message", "input": {"who": "س", '
+                '"channel": "sms", "text": "الرمز ]", "at": null}}]'
+            )
+        )
+        self.assertEqual(calls[0]["input"]["text"], "الرمز ]")
+
+
+@override_settings(**BASE_SETTINGS)
+class ChannelNormalisationTests(SimpleTestCase):
+    """
+    الموديل كتب "channel": "واتساب" بالعربي.
+
+    التطبيق بيـswitch على القيمة دي، فقيمة مش مفهومة = رسالة ما تنبعتش.
+    """
+
+    def check(self, payload):
+        from .brain import _check_tool_input
+
+        return _check_tool_input("send_message", payload, set())
+
+    def message(self, channel):
+        return {"who": "سعد", "text": "تأخرت شوي", "channel": channel}
+
+    def test_arabic_whatsapp_is_translated(self):
+        payload = self.message("واتساب")
+        self.assertIsNone(self.check(payload))
+        self.assertEqual(payload["channel"], "whatsapp")
+
+    def test_arabic_variants(self):
+        for spelling in ["واتس", "الواتس", "واتس اب"]:
+            payload = self.message(spelling)
+            self.assertIsNone(self.check(payload), spelling)
+            self.assertEqual(payload["channel"], "whatsapp", spelling)
+
+    def test_arabic_sms(self):
+        payload = self.message("رسالة نصية")
+        self.assertIsNone(self.check(payload))
+        self.assertEqual(payload["channel"], "sms")
+
+    def test_english_passes_through(self):
+        payload = self.message("whatsapp")
+        self.assertIsNone(self.check(payload))
+        self.assertEqual(payload["channel"], "whatsapp")
+
+    def test_case_is_ignored(self):
+        payload = self.message("WhatsApp")
+        self.assertIsNone(self.check(payload))
+        self.assertEqual(payload["channel"], "whatsapp")
+
+    def test_missing_channel_defaults_to_whatsapp(self):
+        payload = {"who": "سعد", "text": "تأخرت"}
+        self.assertIsNone(self.check(payload))
+        self.assertEqual(payload["channel"], "whatsapp")
+
+    def test_unknown_channel_is_rejected(self):
+        # تليجرام مش مدعوم — أحسن يترفض من إنه يوصل للتطبيق ويتجاهل.
+        self.assertIsNotNone(self.check(self.message("telegram")))
+
+
+class WeekdayCalendarTests(SimpleTestCase):
+    """
+    «يوم الأحد» اتحوّلت لتاريخ طلع ثلاثاء.
+
+    موعد في اليوم الغلط أسوأ من موعد ضايع: الضايع يبان، والغلط يخلّي صاحب
+    العمل مطمّن وهو رايح في اليوم الخطأ. الحل إن الموديل ما يحسبش أصلًا.
+    """
+
+    def context(self, now_iso="2026-08-16T14:00:00+03:00"):
+        from .prompt import build_context
+
+        return build_context(
+            now_iso=now_iso, timezone="Asia/Riyadh", appointments=[]
+        )
+
+    def test_today_is_named(self):
+        # 2026-08-16 أحد.
+        self.assertIn("اليوم: الأحد", self.context())
+
+    def test_next_days_are_listed_with_dates(self):
+        context = self.context()
+        self.assertIn("2026-08-17 = الاثنين (بكرة)", context)
+        self.assertIn("2026-08-18 = الثلاثاء", context)
+        # الأحد الجاي — ده اللي الموديل غلط فيه.
+        self.assertIn("2026-08-23 = الأحد", context)
+
+    def test_a_week_ahead_is_covered(self):
+        # لازم يغطي أسبوع كامل عشان «الأحد الجاي» يكون موجود مهما كان اليوم.
+        context = self.context()
+        for day in ["الاثنين", "الثلاثاء", "الأربعاء", "الخميس",
+                    "الجمعة", "السبت", "الأحد"]:
+            self.assertIn(day, context, day)
+
+    def test_model_is_told_not_to_compute(self):
+        self.assertIn("لا تحسب أيام الأسبوع بنفسك", self.context())
+
+    def test_broken_now_does_not_break_the_prompt(self):
+        # الوقت متحقّق منه في الـserializer، بس ما ينفعش يوقّع الرد كله.
+        context = self.context("مش وقت")
+        self.assertIn("مواعيده الحالية", context)

@@ -61,6 +61,40 @@ def _validate_at(value: Any) -> str | None:
     return None
 
 
+# الموديل بيكتب اسم القناة بالعربي أحيانًا، خصوصًا في الوضع النصّي حيث
+# مافيش enum بيتفرض عليه. القيمة دي بيـswitch عليها التطبيق، فقيمة مش
+# مفهومة معناها رسالة ما تنبعتش. الترجمة أرخص من ضياع الرسالة.
+_CHANNELS = {
+    "whatsapp": "whatsapp",
+    "wa": "whatsapp",
+    "واتساب": "whatsapp",
+    "واتس": "whatsapp",
+    "الواتس": "whatsapp",
+    "واتس اب": "whatsapp",
+    "sms": "sms",
+    "رسالة": "sms",
+    "رساله": "sms",
+    "رسالة نصية": "sms",
+    "نصية": "sms",
+    "نصيه": "sms",
+}
+
+
+def _normalise_channel(payload: dict[str, Any]) -> str | None:
+    """يوحّد اسم القناة في المكان. القيمة الفاضية = واتساب زي البرومبت."""
+    raw = payload.get("channel")
+    if raw is None or not str(raw).strip():
+        payload["channel"] = "whatsapp"
+        return None
+
+    key = str(raw).strip().lower()
+    if key not in _CHANNELS:
+        return f"«{raw}» مو قناة معروفة. استخدم whatsapp أو sms."
+
+    payload["channel"] = _CHANNELS[key]
+    return None
+
+
 def _missing_id_message(known_ids: set[str]) -> str:
     available = ", ".join(sorted(known_ids)) or "ما فيه مواعيد مسجّلة"
     return f"ما فيه موعد بهذا الـ id. المتاح: {available}."
@@ -97,6 +131,9 @@ def _check_tool_input(
             return "لازم تحدّد مين تبعت له."
         if not str(payload.get("text") or "").strip():
             return "نص الرسالة فاضي."
+        error = _normalise_channel(payload)
+        if error:
+            return error
         # at اختياري: null = ابعت حالًا.
         if payload.get("at") is not None:
             return _validate_at(payload.get("at"))

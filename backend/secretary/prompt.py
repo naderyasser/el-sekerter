@@ -9,7 +9,19 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any, Iterable
+
+# الترتيب بترتيب datetime.weekday(): الاثنين = 0.
+_DAYS = [
+    "الاثنين",
+    "الثلاثاء",
+    "الأربعاء",
+    "الخميس",
+    "الجمعة",
+    "السبت",
+    "الأحد",
+]
 
 INSTRUCTIONS = """\
 أنت السكرتير الشخصي لصاحب عمل سعودي. شغلك إنك تمسك مواعيده: تسجّلها لما \
@@ -115,6 +127,46 @@ def build_context(
         listing = "(ما فيه مواعيد مسجّلة)"
 
     return (
-        f"# الوقت الحالي\n{now_iso}\nالمنطقة الزمنية: {timezone}\n\n"
+        f"# الوقت الحالي\n{now_iso}\nالمنطقة الزمنية: {timezone}\n"
+        f"{_calendar(now_iso)}\n"
         f"# مواعيده الحالية\n{listing}"
     )
+
+
+def _calendar(now_iso: str) -> str:
+    """
+    تقويم الأسبوع الجاي بالتواريخ جاهزة.
+
+    الموديل ضعيف في حساب أيام الأسبوع من التاريخ — في أول تشغيل حقيقي
+    حوّل «يوم الأحد» لتاريخ طلع ثلاثاء. وموعد في اليوم الغلط أسوأ من موعد
+    ضايع: الضايع يبان، والغلط يخلّي صاحب العمل مطمّن وهو رايح في اليوم
+    الخطأ.
+
+    الحل إننا ما نخلّيهش يحسب أصلًا — نحط له الجدول جاهز ويقرا منه.
+    """
+    try:
+        now = dt.datetime.fromisoformat(now_iso)
+    except ValueError:
+        # الوقت متحقّق منه في الـserializer، بس ده جزء من البرومبت —
+        # ما ينفعش يوقّع الرد كله لو وصل شكل غريب.
+        return ""
+
+    lines = [f"اليوم: {_DAYS[now.weekday()]}", "", "# تقويم الأيام الجاية"]
+    for offset in range(8):
+        day = now.date() + dt.timedelta(days=offset)
+        name = _DAYS[day.weekday()]
+        if offset == 0:
+            label = "اليوم"
+        elif offset == 1:
+            label = "بكرة"
+        elif offset == 2:
+            label = "بعد بكرة"
+        else:
+            label = f"بعد {offset} أيام"
+        lines.append(f"{day.isoformat()} = {name} ({label})")
+
+    lines.append(
+        "استخدم التواريخ من الجدول هذا حرفيًا. لا تحسب أيام الأسبوع بنفسك."
+    )
+    lines.append("")
+    return "\n".join(lines)
