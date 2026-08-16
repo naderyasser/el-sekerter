@@ -59,15 +59,15 @@ jobs:
         working-directory: app
       - name: بناء APK
         working-directory: app
-        # غيّر العنوان لسيرفرك قبل ما توزّع النسخة.
         env:
-          # ظبّط API_BASE_URL في Settings → Secrets and variables → Actions
-          # → Variables. من غيره الـAPK يطلع بعنوان فاضي ولازم تحطه من
-          # شاشة الإعدادات في التطبيق.
+          # الافتراضي سيرفر الإنتاج. لو عايز تبني لسيرفر تاني ظبّط
+          # API_BASE_URL في Settings → Secrets and variables → Actions
+          # → Variables. (الافتراضي القديم كان عنوان المحاكي 10.0.2.2 —
+          # وده كان ينشر نسخة رسمية موصولة على لا مكان.)
           API_BASE_URL: ${{ vars.API_BASE_URL }}
         run: |
           flutter build apk --release \
-            --dart-define=API_BASE_URL="${API_BASE_URL:-http://10.0.2.2:8000}"
+            --dart-define=API_BASE_URL="${API_BASE_URL:-https://el-sekerter.meena-alaqariya.com}"
       # الـAPK بينشر كإصدار مش كـartifact. سببين:
       #   • تخزين الـartifacts له حصة على مستوى الحساب، ولما تتملى البناء
       #     ينجح والرفع يقع — وده اللي حصل فعلًا.
@@ -117,4 +117,4 @@ jobs:
           API_BASE_URL: ${{ vars.API_BASE_URL }}
         run: |
           flutter build ios --release --no-codesign \
-            --dart-define=API_BASE_URL="${API_BASE_URL:-http://10.0.2.2:8000}"
+            --dart-define=API_BASE_URL="${API_BASE_URL:-https://el-sekerter.meena-alaqariya.com}"
