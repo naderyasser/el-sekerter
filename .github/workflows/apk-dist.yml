@@ -49,13 +49,28 @@ jobs:
         working-directory: app
         run: |
           set -o pipefail
-          flutter test 2>&1 | tee "$RUNNER_TEMP/test-output.txt"
-          passed=$(grep -oE '\+[0-9]+' "$RUNNER_TEMP/test-output.txt" \
-            | tr -d '+' | sort -n | tail -1)
-          echo "عدد الاختبارات الناجحة: ${passed:-0}"
-          echo "TESTS_PASSED=${passed:-0}" >> "$GITHUB_ENV"
-          if [ "${passed:-0}" -lt 77 ]; then
-            echo "::error::المتوقع 77 اختبار على الأقل، الناجح ${passed:-0}"
+          out="$RUNNER_TEMP/test-output.txt"
+          # الgate الأساسي: لو أي اختبار فشل، flutter test نفسه بيرجع كود
+          # غير صفر وpipefail بيوقّف الخطوة هنا.
+          flutter test 2>&1 | tee "$out"
+
+          # العدّ ثانوي للتوثيق. flutter بيطبع بصيغتين حسب وجود TTY:
+          #   من غير TTY (زي هنا): "🎉 77 tests passed."
+          #   مع TTY (محليًا):      "00:05 +77: All tests passed!"
+          # لازم || true على كل grep — من غير كده أول grep مايلاقيش بيرجع
+          # كود 1 وbash -e بتاع GitHub بيقتل الخطوة قبل أي تحقق.
+          passed=$(grep -oE '[0-9]+ tests? passed' "$out" \
+            | grep -oE '^[0-9]+' | tail -1 || true)
+          if [ -z "$passed" ]; then
+            passed=$(grep -oE '\+[0-9]+' "$out" | tr -d '+' \
+              | sort -n | tail -1 || true)
+          fi
+          passed=${passed:-0}
+
+          echo "عدد الاختبارات الناجحة: $passed"
+          echo "TESTS_PASSED=$passed" >> "$GITHUB_ENV"
+          if [ "$passed" -lt 77 ]; then
+            echo "::error::المتوقع 77 اختبار على الأقل، الناجح $passed"
             exit 1
           fi
 
