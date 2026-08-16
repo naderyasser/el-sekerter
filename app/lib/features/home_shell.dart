@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/appointments_controller.dart';
 import 'appointments/appointments_screen.dart';
 import 'chat/chat_screen.dart';
+import 'permission_gate.dart';
 import 'settings/settings_screen.dart';
 
 class HomeShell extends ConsumerStatefulWidget {
@@ -50,7 +51,9 @@ class _HomeShellState extends ConsumerState<HomeShell>
     final upcoming = ref.watch(upcomingAppointmentsProvider).length;
 
     return Scaffold(
-      body: IndexedStack(index: _index, children: _screens),
+      body: PermissionGate(
+        child: IndexedStack(index: _index, children: _screens),
+      ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
         onDestinationSelected: (i) => setState(() => _index = i),

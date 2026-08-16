@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_timezone/flutter_timezone.dart';
 
 import '../api/api_client.dart';
 import '../models/appointment.dart';
@@ -74,7 +75,9 @@ class ChatController extends AsyncNotifier<ChatState> {
             message: trimmed,
             appointments: await _contextAppointments(),
             history: history,
-            timezone: DateTime.now().timeZoneName,
+            // اسم IANA («Asia/Riyadh») مش الاختصار — timeZoneName بيرجّع
+            // «GMT+03:00» والموديل ما يعرف منه البلد ولا مواقيت الصلاة.
+            timezone: (await FlutterTimezone.getLocalTimezone()).identifier,
           );
 
       // الرسالة المجدولة موعد مو إرسال فوري — بتتنفّذ في وقتها.
