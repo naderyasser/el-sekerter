@@ -12,6 +12,9 @@ import datetime as dt
 import logging
 from typing import Any
 
+from django.conf import settings
+
+from . import text_protocol
 from . import tools as tool_defs
 from .prompt import INSTRUCTIONS, build_context
 from .providers import (
@@ -120,7 +123,6 @@ def chat(
         now_iso=now_iso, timezone=timezone, appointments=appointments
     )
     known_ids = {str(a.get("id")) for a in appointments if a.get("id") is not None}
-    specs = tool_defs.tool_specs()
 
     turns: list[Turn] = [
         UserTurn(text=m["content"])
@@ -130,6 +132,13 @@ def chat(
     ]
     turns.append(UserTurn(text=message))
 
+    if settings.SEKERTER_TOOLS == "text":
+        return _text_mode(
+            provider, instructions=INSTRUCTIONS, context=context,
+            turns=turns, known_ids=known_ids,
+        )
+
+    specs = tool_defs.tool_specs()
     actions: list[dict[str, Any]] = []
 
     for _ in range(MAX_TURNS):
@@ -173,3 +182,46 @@ def chat(
         "reply": "تم، سوّيت اللي طلبته." if actions else BUSY_REPLY,
         "actions": actions,
     }
+
+
+def _text_mode(
+    provider,
+    *,
+    instructions: str,
+    context: str,
+    turns: list[Turn],
+    known_ids: set[str],
+) -> dict[str, Any]:
+    """
+    الأوامر بتيجي كـJSON جوّه نص الرد بدل استدعاء أدوات.
+
+    لفّة واحدة بس — مافيش حلقة. الحلقة في الوضع العادي موجودة عشان نرجّع
+    للموديل نتيجة كل أداة، وهنا مافيش أدوات يرجعلها شي. لو الموديل غلط في
+    أمر، الأمر ده بس بيتشال والباقي يعدّي؛ إحنا ما نقدرش نطلب منه يصحّح من
+    غير لفّة زيادة، والسكوت أحسن من إننا نعرض له خطأ تقني.
+    """
+    reply = provider.complete(
+        instructions=instructions + text_protocol.instructions(),
+        context=context,
+        turns=turns,
+        # الأدوات ما بتتبعتش أصلًا — السيرفر اللي بنستخدمه ما يدعمهاش،
+        # وإرسالها ممكن يخلّيه يرفض الطلب كله.
+        tools=[],
+    )
+
+    if reply.refused:
+        return {"reply": REFUSAL_REPLY, "actions": []}
+
+    text, calls = text_protocol.split(reply.text)
+
+    actions: list[dict[str, Any]] = []
+    for call in calls:
+        error = _check_tool_input(call["name"], call["input"], known_ids)
+        if error:
+            logger.warning("text-mode call rejected: %s — %s", call["name"], error)
+            continue
+        actions.append(
+            {"type": tool_defs.ACTION_TYPES[call["name"]], **call["input"]}
+        )
+
+    return {"reply": text or "تم.", "actions": actions}

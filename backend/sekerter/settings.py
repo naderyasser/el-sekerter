@@ -100,6 +100,15 @@ SEKERTER_FORMAT = (
 # اسم الموديل زي ما سيرفرك يعرفه. فاضي = افتراضي الصيغة.
 SEKERTER_MODEL = os.environ.get("SEKERTER_MODEL", "").strip()
 
+# إزاي الموديل يطلّع الأوامر:
+#   native → استدعاء أدوات حقيقي. أدق، ويحتاج سيرفر يدعمه.
+#   text   → الأوامر كـJSON جوّه نص الرد. يشتغل على أي سيرفر.
+# بعض السيرفرات تستقبل tools وترميها في صمت — وساعتها الموديل يقول «أبشر»
+# وما يتسجّل ولا موعد. try_model يكشف الحالة دي؛ لو كشفها حط text.
+SEKERTER_TOOLS = (
+    os.environ.get("SEKERTER_TOOLS", "native").strip().lower() or "native"
+)
+
 # مستوى تفكير الموديل — يشتغل مع أنثروبيك المباشرة بس، والبوابات تتجاهله.
 SEKERTER_EFFORT = os.environ.get("SEKERTER_EFFORT", "low").strip() or "low"
 
