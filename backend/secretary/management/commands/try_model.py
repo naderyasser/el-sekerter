@@ -64,23 +64,57 @@ def _next_sunday_evening(now, action):
     return None
 
 
+# موعد موجود بيتبعت كسياق في حالة «سجّل ثاني» تحت. أول مستخدم حقيقي قال
+# «سجّل موعد ثاني» فالموديل عدّل الموعد الموجود بدل ما يضيف جديد — راح
+# الموعدين الاثنين: الأول اتغيّر والثاني ما اتسجّل.
+_EXISTING = [
+    {
+        "id": "a1",
+        "title": "اجتماع مع أبو سعد",
+        "at": "2026-08-17T17:00:00+03:00",
+        "remind_before_minutes": 60,
+        "repeat": "none",
+        "notes": "",
+        "done": False,
+    }
+]
+
+
+def _must_not_touch_existing(now, action):
+    # الفاحص بيشتغل على أول أمر، والنوع اتفحص قبله — هنا بنتأكد بس إن
+    # الجديد ما لمسش القديم.
+    if action.get("id") == "a1":
+        return "عدّل الموعد الموجود بدل ما يسجّل جديد"
+    return None
+
+
 CASES = [
     (
         "عندي اجتماع مع أبو سعد بكرة الساعة خمسة العصر",
         "create",
         "تسجيل موعد بوقت صريح",
         _tomorrow_at_five,
+        None,
+    ),
+    (
+        "سجّل لي موعد ثاني مع أبو سعد يوم الخميس الساعة عشرة الصبح",
+        "create",
+        "موعد ثاني مع نفس الشخص — إضافة مو تعديل",
+        _must_not_touch_existing,
+        _EXISTING,
     ),
     (
         "ذكّرني أروح المستشفى بعد المغرب يوم الأحد",
         "create",
         "وقت نسبي لصلاة — الموديل لازم يحوّله لساعة",
         _next_sunday_evening,
+        None,
     ),
     (
         "كلّم أبو خالد",
         "call",
         "أمر اتصال، والاسم يرجع زي ما هو",
+        None,
         None,
     ),
     (
@@ -88,11 +122,13 @@ CASES = [
         "message",
         "رسالة واتس، ولازم يفصل الاسم عن النص",
         None,
+        None,
     ),
     (
         "وش عندي بكرة؟",
         None,
         "سؤال — لازم يرد كلام من غير ما يسجّل شي",
+        None,
         None,
     ),
 ]
@@ -114,7 +150,7 @@ class Command(BaseCommand):
         passed = 0
         wrong_dates = 0
 
-        for sentence, expected, why, check in CASES:
+        for sentence, expected, why, check, existing in CASES:
             self.stdout.write(f"  ‹ {sentence}")
 
             try:
@@ -122,7 +158,7 @@ class Command(BaseCommand):
                     message=sentence,
                     now_iso=now.isoformat(),
                     timezone=TIMEZONE,
-                    appointments=[],
+                    appointments=list(existing or []),
                     history=[],
                 )
             except ProviderError as exc:
