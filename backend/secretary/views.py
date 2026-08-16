@@ -15,6 +15,29 @@ logger = logging.getLogger(__name__)
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
+def root(request):
+    """
+    صفحة الجذر.
+
+    مافيش واجهة ويب — السكرتير تطبيق موبايل والسيرفر بيرد على مسارين بس.
+    من غير الصفحة دي، اللي يفتح الدومين في المتصفح يشوف 404 ويفتكر إن
+    النشر باظ. حصل فعلًا.
+    """
+    return Response(
+        {
+            "service": "sekerter",
+            "status": "ok",
+            "note": "سيرفر السكرتير الخاص. مافيش واجهة ويب — استخدم التطبيق.",
+            "endpoints": {
+                "health": "/api/secretary/health",
+                "chat": "POST /api/secretary/chat",
+            },
+        }
+    )
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
 def health(request):
     """فحص إن السيرفر واقف. من غير توكن عشان يشتغل مع مراقبة خارجية."""
     return Response({"status": "ok"})
