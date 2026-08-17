@@ -60,6 +60,16 @@ jobs:
           cache: true
       - run: flutter pub get
         working-directory: app
+      - name: مفتاح التوقيع
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          # نفس مفتاح apk-dist.yml — توقيع موحّد عشان التحديثات تتقبل.
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::السر ANDROID_KEYSTORE_B64 مش متظبط (Settings → Secrets → Actions)."
+            exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > app/android/app/sekerter-release.jks
       - name: بناء APK
         working-directory: app
         env:
