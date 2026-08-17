@@ -125,6 +125,19 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         padding: const EdgeInsets.all(24),
         children: [
           if (widget.isSetup) ...[
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 20),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(24),
+                  child: Image.asset(
+                    'assets/logo/logo.png',
+                    width: 96,
+                    height: 96,
+                  ),
+                ),
+              ),
+            ),
             Text(
               'وصّل التطبيق بسيرفرك',
               style: Theme.of(context).textTheme.titleMedium,

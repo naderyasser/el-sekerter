@@ -70,7 +70,11 @@ class ReminderScheduler {
     await _plugin.initialize(
       // مش const لأن فئات آيفون بتتبني وقت التشغيل.
       settings: InitializationSettings(
-        android: const AndroidInitializationSettings('@mipmap/ic_launcher'),
+        // أيقونة شريط الحالة: أندرويد بيعرضها كقناع أبيض، فالأيقونة الملونة
+        // كانت بتطلع مربع مصمت. دي «س» بيضا على شفاف — مرسومة لكل كثافة.
+        android: const AndroidInitializationSettings(
+          '@drawable/ic_stat_sekerter',
+        ),
         iOS: DarwinInitializationSettings(
           // الأذونات بنطلبها صراحة في شاشة الإعداد عشان نقدر نشرح للمستخدم
           // قبل ما النظام يسأله.
