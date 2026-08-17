@@ -50,10 +50,13 @@ class _PermissionGateState extends ConsumerState<PermissionGate>
   Future<void> _request() async {
     final scheduler = ref.read(schedulerProvider);
     await scheduler.requestPermissions();
+    // المستخدم ممكن يقفل التطبيق والطلب لسه شغال — ref بعد dispose بترمي.
+    if (!mounted) return;
     await _check();
   }
 
   Future<void> _check() async {
+    if (!mounted) return;
     final scheduler = ref.read(schedulerProvider);
     final granted = await scheduler.hasPermission();
     final exact = await scheduler.exactAlarmAllowed();
