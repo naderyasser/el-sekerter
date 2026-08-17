@@ -193,17 +193,19 @@ class ReminderScheduler {
         : AndroidScheduleMode.inexactAllowWhileIdle;
 
     final now = DateTime.now();
-    final due =
-        appointments
-            .where((a) => !a.done)
-            // تذكير وقته عدّى مبينفعش يتجدول. الميعاد نفسه ممكن يكون لسه جاي
-            // (لو اتسجّل قبله بشوية) وده مقبول — بيظهر في القايمة من غير رنّة.
-            .where((a) => a.remindAt.isAfter(now))
-            .toList()
-          ..sort((a, b) => a.remindAt.compareTo(b.remindAt));
+    final due = <(Appointment, DateTime)>[];
+    for (final appointment in appointments.where((a) => !a.done)) {
+      final fireAt = _nextFireTime(appointment, now);
+      // تذكير وقته عدّى وما بيتكررش مبينفعش يتجدول. الميعاد نفسه ممكن يكون
+      // لسه جاي (لو اتسجّل قبله بشوية) وده مقبول — بيظهر من غير رنّة.
+      if (fireAt != null) due.add((appointment, fireAt));
+    }
+    due.sort((a, b) => a.$2.compareTo(b.$2));
 
-    for (final appointment in due.take(AppConfig.maxScheduledReminders)) {
-      await _schedule(appointment, mode);
+    for (final (appointment, fireAt) in due.take(
+      AppConfig.maxScheduledReminders,
+    )) {
+      await _schedule(appointment, fireAt, mode);
     }
 
     if (due.length > AppConfig.maxScheduledReminders) {
@@ -280,10 +282,52 @@ class ReminderScheduler {
     }
   }
 
+  /// وقت الرنّة الجاية، أو null لو مافيش حاجة تتجدول.
+  ///
+  /// المتكرر اللي مرّته الأولى عدّت بيتدحرج للمرة الجاية بدل ما يتفلتر:
+  /// قبل التصليح ده «كل أحد الساعة ٩» كان بيرنّ أول أحد بس — أول ما
+  /// التطبيق يتفتح بعدها، rescheduleAll تلغي كل حاجة وتفلتر المتكرر
+  /// لأن وقته الأصلي بقى في الماضي، فيموت في صمت.
+  DateTime? _nextFireTime(Appointment appointment, DateTime now) {
+    final remindAt = appointment.remindAt;
+    if (remindAt.isAfter(now)) return remindAt;
+    if (appointment.repeat == Repeat.none) return null;
+
+    // تأجيل عدّى وقته خلص مفعوله — نرجع لوقت التذكير الأساسي وندحرجه.
+    var base = appointment.at.subtract(
+      Duration(minutes: appointment.remindBeforeMinutes),
+    );
+    // بحد أقصى معقول عشان بيانات بايظة (تاريخ قديم بسنين يوميًا = آلاف
+    // اللفّات) ما تعلّقش فتح التطبيق.
+    for (var i = 0; i < 4000 && !base.isAfter(now); i++) {
+      base = switch (appointment.repeat) {
+        Repeat.daily => base.add(const Duration(days: 1)),
+        Repeat.weekly => base.add(const Duration(days: 7)),
+        Repeat.monthly => DateTime(
+          base.year,
+          base.month + 1,
+          base.day,
+          base.hour,
+          base.minute,
+        ),
+        Repeat.yearly => DateTime(
+          base.year + 1,
+          base.month,
+          base.day,
+          base.hour,
+          base.minute,
+        ),
+        Repeat.none => base,
+      };
+    }
+    return base.isAfter(now) ? base : null;
+  }
+
   Future<void> _schedule(
-    Appointment appointment, [
+    Appointment appointment,
+    DateTime fireAt, [
     AndroidScheduleMode mode = AndroidScheduleMode.exactAllowWhileIdle,
-  ]) => _withFallback(mode, (m) => _scheduleWith(appointment, m));
+  ]) => _withFallback(mode, (m) => _scheduleWith(appointment, fireAt, m));
 
   /// يجدول ويتصرف في رفض «الجدولة الدقيقة» بدل ما يرمي.
   ///
@@ -313,13 +357,14 @@ class ReminderScheduler {
 
   Future<void> _scheduleWith(
     Appointment appointment,
+    DateTime fireAt,
     AndroidScheduleMode mode,
   ) async {
     await _plugin.zonedSchedule(
       id: _notificationId(appointment.id),
       title: appointment.title,
       body: _body(appointment),
-      scheduledDate: tz.TZDateTime.from(appointment.remindAt, tz.local),
+      scheduledDate: tz.TZDateTime.from(fireAt, tz.local),
       payload: appointment.id,
       androidScheduleMode: mode,
       matchDateTimeComponents: _repeatComponent(appointment.repeat),
