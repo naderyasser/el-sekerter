@@ -968,6 +968,96 @@ void main() {
     });
   });
 
+  group('إصلاح: المتكرر كان يرنّ أول مرة بس وبعدين يموت في صمت', () {
+    // rescheduleAll بتلغي كل حاجة وتعيد الجدولة مع كل فتح للتطبيق —
+    // والمتكرر اللي مرّته الأولى عدّت كان بيتفلتر لأن وقته الأصلي بقى
+    // في الماضي. «كل أحد الساعة ٩» كان معناها الفعلي «الأحد الجاي بس».
+
+    List<Invocation> remindersOf(RecordingPlugin plugin) => plugin.scheduled
+        .where((c) => (c.namedArguments[#id] as int) < 1900000000)
+        .toList();
+
+    test('أسبوعي عدّى أسبوعه الأول → يتجدول للأحد الجاي', () async {
+      final plugin = RecordingPlugin();
+      final weekly = Appointment(
+        id: 'w1',
+        title: 'اجتماع كل أحد',
+        at: DateTime.now().subtract(const Duration(days: 3)),
+        repeat: Repeat.weekly,
+      );
+
+      await ReminderScheduler(plugin).rescheduleAll([weekly]);
+
+      final scheduled = remindersOf(plugin);
+      expect(scheduled, hasLength(1));
+      final fireAt =
+          scheduled.single.namedArguments[#scheduledDate] as tz.TZDateTime;
+      expect(fireAt.isAfter(DateTime.now()), isTrue);
+      // المقارنة باللحظة مش بساعة الحائط — منطقة الاختبار (الرياض) غير
+      // منطقة الجهاز، ومقارنة .hour بينهم هي نفس الغلطة اللي الكود
+      // بيتحاشاها. المتوقع: التذكير الأصلي (الموعد - ساعة) + أسبوع واحد.
+      final expected = weekly.at
+          .subtract(const Duration(minutes: 60))
+          .add(const Duration(days: 7));
+      expect(fireAt.isAtSameMomentAs(expected), isTrue);
+      expect(
+        scheduled.single.namedArguments[#matchDateTimeComponents],
+        DateTimeComponents.dayOfWeekAndTime,
+      );
+    });
+
+    test('يومي قديم بأيام → يتجدول لبكرة مش يتفلتر', () async {
+      final plugin = RecordingPlugin();
+      final daily = Appointment(
+        id: 'd1',
+        title: 'دواء الضغط',
+        at: DateTime.now().subtract(const Duration(days: 10)),
+        repeat: Repeat.daily,
+      );
+
+      await ReminderScheduler(plugin).rescheduleAll([daily]);
+
+      final scheduled = remindersOf(plugin);
+      expect(scheduled, hasLength(1));
+      final fireAt =
+          scheduled.single.namedArguments[#scheduledDate] as tz.TZDateTime;
+      expect(fireAt.isAfter(DateTime.now()), isTrue);
+      expect(
+        fireAt.difference(DateTime.now()),
+        lessThan(const Duration(days: 1)),
+      );
+    });
+
+    test('تأجيل عدّى وقته على متكرر → يرجع لجدوله الأساسي', () async {
+      final plugin = RecordingPlugin();
+      final snoozed = Appointment(
+        id: 's1',
+        title: 'اجتماع كل أحد',
+        at: DateTime.now().subtract(const Duration(days: 3)),
+        repeat: Repeat.weekly,
+        // «أجّل ربع ساعة» من أسبوع فات — خلص مفعوله.
+        snoozeUntil: DateTime.now().subtract(const Duration(days: 3)),
+      );
+
+      await ReminderScheduler(plugin).rescheduleAll([snoozed]);
+
+      expect(remindersOf(plugin), hasLength(1));
+    });
+
+    test('غير المتكرر اللي فات وقته يتفلتر زي الأول بالظبط', () async {
+      final plugin = RecordingPlugin();
+      final past = Appointment(
+        id: 'p1',
+        title: 'موعد فات',
+        at: DateTime.now().subtract(const Duration(days: 1)),
+      );
+
+      await ReminderScheduler(plugin).rescheduleAll([past]);
+
+      expect(remindersOf(plugin), isEmpty);
+    });
+  });
+
   group('إصلاح: زرار المايك كان بيعلّق على «أسمعك…»', () {
     test('لما المحرّك يقف لوحده الخدمة تبلّغ والواجهة ترجع', () async {
       final engine = FakeSpeechEngine();
