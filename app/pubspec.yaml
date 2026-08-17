@@ -47,9 +47,24 @@ dev_dependencies:
   # عند نظام التشغيل نفسه، مش عند بديل مسجّل. بتتشغل في deep-test.yml.
   integration_test:
     sdk: flutter
+  # توليد أيقونات المشغّل بكل الكثافات + الشكل التكيفي من أصل واحد.
+  # الأصل بيتولد من scripts في assets/logo — شغّل بعد أي تغيير فيه:
+  #   dart run flutter_launcher_icons
+  flutter_launcher_icons: ^0.14.4
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: assets/logo/icon.png
+  adaptive_icon_background: assets/logo/icon_background.png
+  adaptive_icon_foreground: assets/logo/icon_foreground.png
+  remove_alpha_ios: true
 
 flutter:
   uses-material-design: true
+
+  assets:
+    - assets/logo/logo.png
 
   # الخط الافتراضي بيعرض العربي ضعيف — المسافات بين الحروف مش مظبوطة
   # والأوزان محدودة. Almarai معمول للعربي أصلًا ومجرّب في الإنتاج.
