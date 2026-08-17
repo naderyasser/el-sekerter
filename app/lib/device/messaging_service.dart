@@ -30,6 +30,22 @@ enum SendOutcome {
 }
 
 class MessagingService {
+  /// [openExternal] قابلة للحقن عشان الاختبارات تتحقق من ترتيب المحاولات
+  /// من غير ما تفتح تطبيقات بجد.
+  MessagingService({Future<bool> Function(Uri uri)? openExternal})
+    : _openExternal = openExternal ?? _launch;
+
+  final Future<bool> Function(Uri uri) _openExternal;
+
+  static Future<bool> _launch(Uri uri) async {
+    try {
+      return await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } on Exception {
+      // مافيش تطبيق يفتح الرابط ده — بنرجّع false والمنادي يجرّب البديل.
+      return false;
+    }
+  }
+
   /// يطلب رقم. على أندرويد مباشرة لو الإذن متاح، وإلا يفتح شاشة الاتصال.
   Future<bool> call(String phone) async {
     final number = clean(phone);
@@ -53,21 +69,26 @@ class MessagingService {
       }
     }
 
-    return _open(Uri(scheme: 'tel', path: number));
+    return _openExternal(Uri(scheme: 'tel', path: number));
   }
 
   /// يفتح واتساب والرسالة مكتوبة. الإرسال بضغطة من صاحب العمل.
+  ///
+  /// الترتيب مقصود: سكيم `whatsapp://` الأول لأنه يفتح التطبيق نفسه
+  /// مباشرة. `wa.me` احتياطي بس — رابط https ممكن أندرويد يوجهه للمتصفح
+  /// بدل واتساب. والنسخة القديمة كانت تسأل canLaunchUrl الأول، وده معروف
+  /// إنه بيرجّع false غلط على أندرويد ١١+ — فكانت تستسلم من غير ما تجرّب.
+  /// دلوقتي بنجرّب فعلًا ونشوف النتيجة.
   Future<SendOutcome> whatsapp(String phone, String text) async {
     final number = international(phone);
+    final encoded = Uri.encodeComponent(text);
 
-    // wa.me هو الرابط الرسمي وبيشتغل على الجهازين.
-    final uri = Uri.parse(
-      'https://wa.me/$number?text=${Uri.encodeComponent(text)}',
-    );
+    final direct = Uri.parse('whatsapp://send?phone=$number&text=$encoded');
+    if (await _openExternal(direct)) return SendOutcome.opened;
 
-    if (await canLaunchUrl(uri)) {
-      return await _open(uri) ? SendOutcome.opened : SendOutcome.failed;
-    }
+    final web = Uri.parse('https://wa.me/$number?text=$encoded');
+    if (await _openExternal(web)) return SendOutcome.opened;
+
     return SendOutcome.appMissing;
   }
 
@@ -80,15 +101,7 @@ class MessagingService {
       path: number,
       queryParameters: {'body': text},
     );
-    return await _open(uri) ? SendOutcome.opened : SendOutcome.failed;
-  }
-
-  Future<bool> _open(Uri uri) async {
-    try {
-      return await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } on Exception {
-      return false;
-    }
+    return await _openExternal(uri) ? SendOutcome.opened : SendOutcome.failed;
   }
 
   @visibleForTesting

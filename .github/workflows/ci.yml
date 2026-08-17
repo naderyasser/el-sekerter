@@ -47,6 +47,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # التاريخ كامل عشان rev-list --count يدي رقم نسخة تصاعدي.
+          fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -67,6 +70,7 @@ jobs:
           API_BASE_URL: ${{ vars.API_BASE_URL }}
         run: |
           flutter build apk --release \
+            --build-number=$(git rev-list --count HEAD) \
             --dart-define=API_BASE_URL="${API_BASE_URL:-https://el-sekerter.meena-alaqariya.com}"
       # الـAPK بينشر كإصدار مش كـartifact. سببين:
       #   • تخزين الـartifacts له حصة على مستوى الحساب، ولما تتملى البناء

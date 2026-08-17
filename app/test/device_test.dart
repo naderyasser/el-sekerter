@@ -97,4 +97,72 @@ void main() {
       expect(ContactsService.normalise('050 123-4567'), '0501234567');
     });
   });
+
+  group('فتح واتساب: السكيم المباشر الأول وwa.me احتياطي', () {
+    // كانت canLaunchUrl هي الحكم، وهي معروف إنها بتكذب على أندرويد ١١+
+    // فكانت بترجّع «واتساب مو منصّب» والواتساب منصّب. دلوقتي بنجرّب الفتح
+    // فعلًا: whatsapp:// الأول (بيفتح التطبيق نفسه)، وبعده wa.me.
+
+    test('واتساب موجود → السكيم المباشر يكفي ومحاولة واحدة', () async {
+      final attempts = <Uri>[];
+      final service = MessagingService(
+        openExternal: (uri) async {
+          attempts.add(uri);
+          return uri.scheme == 'whatsapp';
+        },
+      );
+
+      final outcome = await service.whatsapp('0501234567', 'تأخرت شوي');
+
+      expect(outcome, SendOutcome.opened);
+      expect(attempts, hasLength(1));
+      expect(attempts.single.scheme, 'whatsapp');
+      expect(attempts.single.queryParameters['phone'], '966501234567');
+      expect(attempts.single.queryParameters['text'], 'تأخرت شوي');
+    });
+
+    test('السكيم المباشر فشل → wa.me يتجرّب قبل ما نستسلم', () async {
+      final attempts = <Uri>[];
+      final service = MessagingService(
+        openExternal: (uri) async {
+          attempts.add(uri);
+          return uri.host == 'wa.me';
+        },
+      );
+
+      final outcome = await service.whatsapp('0501234567', 'وصلت');
+
+      expect(outcome, SendOutcome.opened);
+      expect(attempts, hasLength(2));
+      expect(attempts.first.scheme, 'whatsapp');
+      expect(
+        attempts.last.toString(),
+        startsWith('https://wa.me/966501234567'),
+      );
+    });
+
+    test('الاتنين فشلوا → «واتساب مو منصّب» مش صمت', () async {
+      final service = MessagingService(openExternal: (_) async => false);
+      expect(
+        await service.whatsapp('0501234567', 'اهلا'),
+        SendOutcome.appMissing,
+      );
+    });
+
+    test('الرسالة النصية بتفتح تطبيق الرسايل والنص جاهز', () async {
+      final attempts = <Uri>[];
+      final service = MessagingService(
+        openExternal: (uri) async {
+          attempts.add(uri);
+          return true;
+        },
+      );
+
+      final outcome = await service.sms('0501234567', 'وصلت');
+
+      expect(outcome, SendOutcome.opened);
+      expect(attempts.single.scheme, 'sms');
+      expect(attempts.single.queryParameters['body'], 'وصلت');
+    });
+  });
 }
