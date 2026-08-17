@@ -25,6 +25,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: apk-dist
+          # التاريخ كامل عشان rev-list --count يدي رقم نسخة تصاعدي حقيقي.
+          fetch-depth: 0
 
       - uses: actions/setup-java@v4
         with:
@@ -69,15 +71,18 @@ jobs:
 
           echo "عدد الاختبارات الناجحة: $passed"
           echo "TESTS_PASSED=$passed" >> "$GITHUB_ENV"
-          if [ "$passed" -lt 82 ]; then
-            echo "::error::المتوقع 82 اختبار على الأقل، الناجح $passed"
+          if [ "$passed" -lt 86 ]; then
+            echo "::error::المتوقع 86 اختبار على الأقل، الناجح $passed"
             exit 1
           fi
 
       - name: بناء APK
         working-directory: app
         run: |
+          # رقم النسخة = عدد الكوميتات: تصاعدي دايمًا وموحّد بين الـworkflows،
+          # فأندرويد يقبل كل تحديث فوق اللي قبله.
           flutter build apk --release \
+            --build-number=$(git rev-list --count HEAD) \
             --dart-define=API_BASE_URL=https://el-sekerter.meena-alaqariya.com
 
       - name: تجهيز dist
@@ -122,9 +127,13 @@ jobs:
 
           ## ملاحظات
 
-          - النسخة موقّعة بمفاتيح الديباج (زي ما هي متظبطة في
-            \`app/android/app/build.gradle.kts\`). بتتثبّت وبتشتغل عادي، بس
-            متنفعش تترفع على Google Play من غير مفتاح إصدار حقيقي.
+          - النسخة موقّعة بمفتاح ثابت (\`app/android/app/sekerter-release.jks\`)،
+            فأي تحديث جديد بيتثبّت فوق القديم عادي من غير مسح.
+            **استثناء لمرة واحدة:** اللي مثبّت نسخة من قبل 2026-08-16 لازم
+            يمسحها ويثبّت من جديد — النسخ القديمة كانت بتتوقع بمفتاح متغيّر
+            وأندرويد بيرفض التحديث فوقها بصمت.
+          - المفتاح مش سر (التوزيع يدوي مش على المتجر) — لو التطبيق هينزل
+            Google Play يومًا، ساعتها يتعمل مفتاح سري.
           - البناء بيتعمل أوتوماتيك من \`.github/workflows/apk-dist.yml\` مع كل
             دفعة على فرع \`apk-dist\`.
           EOF

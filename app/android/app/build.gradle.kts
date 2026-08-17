@@ -34,11 +34,31 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        create("release") {
+            // مفتاح ثابت متكوميت في الريبو — مش سهو، قرار مقصود:
+            //
+            // التوقيع بمفاتيح الديباج كان بيولّد مفتاح *جديد* على رَنَر
+            // GitHub في كل بيلد، وأندرويد يرفض تثبيت تحديث توقيعه مختلف
+            // عن المثبّت — **ويرفض بصمت**. النتيجة اللي حصلت فعلًا: المستخدم
+            // «يحدّث» ويفضل على النسخة القديمة من غير ما يعرف.
+            //
+            // التطبيق بيتوزّع يدويًا (واتساب/رابط مباشر) مش على Google Play،
+            // فالمفتاح ده مالوش قيمة سرّية بتحمي حاجة — أقصى اللي يعمله حد
+            // معاه إنه يبني تطبيق بنفس التوقيع، ولسه محتاج الضحية تثبّته
+            // بنفسها. لو التطبيق هيتنشر على المتجر يومًا، ساعتها يتعمل
+            // مفتاح سري في GitHub Secrets — وده هيغيّر التوقيع ويحتاج
+            // إعادة تثبيت لمرة واحدة.
+            storeFile = file("sekerter-release.jks")
+            storePassword = "sekerter2026"
+            keyAlias = "sekerter"
+            keyPassword = "sekerter2026"
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 }
