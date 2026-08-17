@@ -40,8 +40,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Future<void> _load() async {
     final settings = ref.read(settingsStoreProvider);
-    _url.text = await settings.apiBaseUrl();
-    _token.text = await settings.apiToken() ?? '';
+    final url = await settings.apiBaseUrl();
+    final token = await settings.apiToken() ?? '';
+    // الشاشة ممكن تتقفل والتحميل شغال — كتابة في controller اتعمل له
+    // dispose بترمي. القيم بتتقرا الأول وبعدين نتأكد إننا لسه عايشين.
+    if (!mounted) return;
+    _url.text = url;
+    _token.text = token;
     final granted = await ref.read(schedulerProvider).hasPermission();
     if (!mounted) return;
     setState(() {
