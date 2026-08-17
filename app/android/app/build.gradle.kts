@@ -34,31 +34,36 @@ android {
         versionName = flutter.versionName
     }
 
+    // مفتاح توقيع ثابت — الملف نفسه **مش** في الريبو (الريبو عام، ومفتاح
+    // منشور معناه إن أي حد يقدر يوقّع نسخة مزيفة تتثبّت فوق تطبيق المستخدم).
+    // الـCI بيفكّه من GitHub Secret اسمه ANDROID_KEYSTORE_B64 قبل البناء.
+    //
+    // ليه أصلًا مفتاح ثابت؟ التوقيع بمفاتيح الديباج كان بيولّد مفتاح *جديد*
+    // على رَنَر GitHub في كل بيلد، وأندرويد يرفض تثبيت تحديث توقيعه مختلف
+    // عن المثبّت — **ويرفض بصمت**. النتيجة اللي حصلت فعلًا: المستخدم «يحدّث»
+    // ويفضل على النسخة القديمة من غير ما يعرف.
+    //
+    // الباسورد مكتوب هنا عادي: من غير ملف المفتاح نفسه مالوش أي قيمة.
+    // محليًا (flutter run) الملف مش موجود فبنقع على مفاتيح الديباج.
     signingConfigs {
         create("release") {
-            // مفتاح ثابت متكوميت في الريبو — مش سهو، قرار مقصود:
-            //
-            // التوقيع بمفاتيح الديباج كان بيولّد مفتاح *جديد* على رَنَر
-            // GitHub في كل بيلد، وأندرويد يرفض تثبيت تحديث توقيعه مختلف
-            // عن المثبّت — **ويرفض بصمت**. النتيجة اللي حصلت فعلًا: المستخدم
-            // «يحدّث» ويفضل على النسخة القديمة من غير ما يعرف.
-            //
-            // التطبيق بيتوزّع يدويًا (واتساب/رابط مباشر) مش على Google Play،
-            // فالمفتاح ده مالوش قيمة سرّية بتحمي حاجة — أقصى اللي يعمله حد
-            // معاه إنه يبني تطبيق بنفس التوقيع، ولسه محتاج الضحية تثبّته
-            // بنفسها. لو التطبيق هيتنشر على المتجر يومًا، ساعتها يتعمل
-            // مفتاح سري في GitHub Secrets — وده هيغيّر التوقيع ويحتاج
-            // إعادة تثبيت لمرة واحدة.
-            storeFile = file("sekerter-release.jks")
-            storePassword = "sekerter2026"
-            keyAlias = "sekerter"
-            keyPassword = "sekerter2026"
+            val keystore = file("sekerter-release.jks")
+            if (keystore.exists()) {
+                storeFile = keystore
+                storePassword = "sekerter2026"
+                keyAlias = "sekerter"
+                keyPassword = "sekerter2026"
+            }
         }
     }
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = if (file("sekerter-release.jks").exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }

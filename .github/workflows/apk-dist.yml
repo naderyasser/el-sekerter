@@ -76,6 +76,19 @@ jobs:
             exit 1
           fi
 
+      - name: مفتاح التوقيع
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          # مفتاح ثابت من أسرار الريبو — من غيره كل بيلد يطلع بتوقيع مختلف
+          # وأندرويد يرفض التحديث فوق المثبّت بصمت (حصل فعلًا).
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::السر ANDROID_KEYSTORE_B64 مش متظبط. من صفحة الريبو:"
+            echo "::error::Settings → Secrets and variables → Actions → New repository secret"
+            exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > app/android/app/sekerter-release.jks
+
       - name: بناء APK
         working-directory: app
         run: |
@@ -127,13 +140,11 @@ jobs:
 
           ## ملاحظات
 
-          - النسخة موقّعة بمفتاح ثابت (\`app/android/app/sekerter-release.jks\`)،
+          - النسخة موقّعة بمفتاح ثابت (من أسرار الريبو، مش متكوميت)،
             فأي تحديث جديد بيتثبّت فوق القديم عادي من غير مسح.
             **استثناء لمرة واحدة:** اللي مثبّت نسخة من قبل 2026-08-16 لازم
             يمسحها ويثبّت من جديد — النسخ القديمة كانت بتتوقع بمفتاح متغيّر
             وأندرويد بيرفض التحديث فوقها بصمت.
-          - المفتاح مش سر (التوزيع يدوي مش على المتجر) — لو التطبيق هينزل
-            Google Play يومًا، ساعتها يتعمل مفتاح سري.
           - البناء بيتعمل أوتوماتيك من \`.github/workflows/apk-dist.yml\` مع كل
             دفعة على فرع \`apk-dist\`.
           EOF
