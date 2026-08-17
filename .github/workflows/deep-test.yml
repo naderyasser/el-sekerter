@@ -54,7 +54,7 @@ jobs:
   on-device:
     # المحاكي بياخد وقت — بس ده الاختبار الوحيد اللي بيسأل أندرويد نفسه.
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -92,9 +92,13 @@ jobs:
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
           working-directory: app
           script: |
-            # الجولة الأولى: كل حاجة عادية — القناة، الحجز عند النظام،
-            # المتكرر اللي فات، والإشعار بينزل فعلًا في وقته.
-            flutter test integration_test/on_device_test.dart --dart-define=EXPECT_EXACT=true
+            # الجولة الأولى — الملفين:
+            #   on_device_test: طبقة النظام (القناة، الحجز، المتكرر،
+            #     والإشعار بينزل فعلًا في وقته).
+            #   app_flow_test: محاكاة مستخدم كامل — التطبيق بيتفتح،
+            #     الإعداد الأول، الشات بيتكتب فيه فعلًا، كل ميزة تتدوس
+            #     من الواجهة، وبعد كل خطوة بنسأل أندرويد نفسه.
+            flutter test integration_test --dart-define=EXPECT_EXACT=true
 
             # الجولة التانية: نفس أزمة أجهزة شاومي وأمثالها — النظام مانع
             # «الجدولة الدقيقة». قبل التصليح ده كان بيمسح كل التذكيرات
