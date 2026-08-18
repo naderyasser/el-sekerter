@@ -10,4 +10,4 @@
   XML شاشة الفتح، فبنثبّتها كمان للأمان.
 -->
 <resources xmlns:tools="http://schemas.android.com/tools"
-    tools:keep="@drawable/ic_stat_sekerter,@drawable/splash_logo,@color/splash_background" />
+    tools:keep="@drawable/ic_stat_sekerter,@drawable/splash_logo,@color/splash_background,@raw/siren" />

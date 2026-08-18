@@ -15,7 +15,7 @@ class SpeechService {
   static const String _preferredLocale = 'ar_SA';
 
   bool _available = false;
-  String? _localeId;
+  String _localeId = _preferredLocale;
 
   /// الاستماع وقف — سواء المستخدم سكت، أو المهلة خلصت، أو حصل عطل.
   /// الواجهة لازم تسمع ده عشان زرار المايك ما يفضلش شكله «بيسمع» وهو واقف:
@@ -27,6 +27,10 @@ class SpeechService {
   void Function(String message)? onProblem;
 
   bool get isListening => _speech.isListening;
+
+  /// اللغة اللي هيتفرّغ بيها الكلام — للاختبارات: لازم تكون عربي دايمًا.
+  @visibleForTesting
+  String get localeId => _localeId;
 
   /// بيرجّع false لو الجهاز مبيدعمش التفريغ أو المستخدم رفض إذن المايك.
   Future<bool> initialize() async {
@@ -69,17 +73,31 @@ class SpeechService {
     _ => 'ما قدرت أسمعك. جرّب مرة ثانية أو اكتب رسالتك.',
   };
 
-  Future<String?> _resolveLocale() async {
-    final locales = await _speech.locales();
-    for (final id in [_preferredLocale, 'ar-SA']) {
-      final match = locales.where((l) => l.localeId == id);
-      if (match.isNotEmpty) return match.first.localeId;
+  /// بيرجّع معرّف لغة عربي **دايمًا** — عمره ما بيرجّع «خلّيها للجهاز».
+  ///
+  /// النسخة القديمة كانت بترجّع null لو قائمة locales() ما فيهاش عربي،
+  /// والمحرّك ساعتها بيستخدم لغة الجهاز الافتراضية — وعلى أجهزة كتير دي
+  /// إنجليزي، فكلام المستخدم العربي كان بيتفرّغ حروف إنجليزي ملخبطة.
+  /// المشكلة إن القائمة نفسها مش موثوقة: محرّكات كتير بترجّعها ناقصة أو
+  /// فاضية مع إنها بتفهم العربي عادي لو اتطلب صراحة. فلو ما لقيناش عربي
+  /// في القائمة بنفرض ar_SA برضه — أسوأ نتيجة إن المحرّك يرفضها بعطل
+  /// واضح للمستخدم، وده أحسن ألف مرة من إنجليزي صامت غلط.
+  Future<String> _resolveLocale() async {
+    try {
+      final locales = await _speech.locales();
+      for (final id in [_preferredLocale, 'ar-SA']) {
+        final match = locales.where((l) => l.localeId == id);
+        if (match.isNotEmpty) return match.first.localeId;
+      }
+      // أي عربي من القائمة أحسن من فرض واحد مش فيها.
+      final anyArabic = locales.where(
+        (l) => l.localeId.startsWith('ar_') || l.localeId.startsWith('ar-'),
+      );
+      if (anyArabic.isNotEmpty) return anyArabic.first.localeId;
+    } on Exception catch (e) {
+      debugPrint('تعذّرت قراءة لغات التعرّف: $e');
     }
-    // أي عربي أحسن من الافتراضي (اللي غالبًا إنجليزي).
-    final anyArabic = locales.where(
-      (l) => l.localeId.startsWith('ar_') || l.localeId.startsWith('ar-'),
-    );
-    return anyArabic.isNotEmpty ? anyArabic.first.localeId : null;
+    return _preferredLocale;
   }
 
   /// يبدأ الاستماع. [onResult] بتتنده مع كل تحديث — النتيجة النهائية بيبقى

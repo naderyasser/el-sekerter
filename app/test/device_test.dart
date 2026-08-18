@@ -165,4 +165,75 @@ void main() {
       expect(attempts.single.queryParameters['body'], 'وصلت');
     });
   });
+
+  group('إصلاح: واتساب كان يفتح من غير الرسالة', () {
+    // العطل اللي المستخدم بلّغ عنه حرفيًا: «يدخل الوتس فقط ولا يرسل».
+    // سكيم whatsapp:// على نسخ واتساب الجديدة بيفتح التطبيق وبيتجاهل
+    // النص على أجهزة كتير. الطريق الموثوق: intent صريح لحزمة واتساب
+    // نفسها برابط wa.me — والرابط ده واتساب بيقراه صح دايمًا.
+
+    test('أندرويد: intent لحزمة واتساب برابط wa.me ومعاه النص', () async {
+      final attempts = <(String, Uri)>[];
+      final external = <Uri>[];
+      final service = MessagingService(
+        isAndroid: true,
+        openWithApp: (package, uri) async {
+          attempts.add((package, uri));
+          return package == 'com.whatsapp';
+        },
+        openExternal: (uri) async {
+          external.add(uri);
+          return true;
+        },
+      );
+
+      final outcome = await service.whatsapp('0501234567', 'تأخرت شوي');
+
+      expect(outcome, SendOutcome.opened);
+      expect(attempts, hasLength(1));
+      expect(attempts.single.$1, 'com.whatsapp');
+      // الرابط اللي بيوصل للحزمة: wa.me بالرقم الدولي والنص كامل.
+      expect(attempts.single.$2.host, 'wa.me');
+      expect(attempts.single.$2.path, '/966501234567');
+      expect(attempts.single.$2.queryParameters['text'], 'تأخرت شوي');
+      // ما فيش داعي لأي احتياطي — الحزمة فتحت.
+      expect(external, isEmpty);
+    });
+
+    test('واتساب العادي مش منصّب → نسخة الأعمال تتجرّب بعده', () async {
+      final attempts = <String>[];
+      final service = MessagingService(
+        isAndroid: true,
+        openWithApp: (package, uri) async {
+          attempts.add(package);
+          return package == 'com.whatsapp.w4b';
+        },
+        openExternal: (_) async => false,
+      );
+
+      final outcome = await service.whatsapp('0501234567', 'وصلت');
+
+      expect(outcome, SendOutcome.opened);
+      expect(attempts, ['com.whatsapp', 'com.whatsapp.w4b']);
+    });
+
+    test('ولا حزمة اشتغلت → السكيم القديم وwa.me احتياطي بالترتيب', () async {
+      final external = <Uri>[];
+      final service = MessagingService(
+        isAndroid: true,
+        openWithApp: (_, _) async => false,
+        openExternal: (uri) async {
+          external.add(uri);
+          return false;
+        },
+      );
+
+      final outcome = await service.whatsapp('0501234567', 'اهلا');
+
+      expect(outcome, SendOutcome.appMissing);
+      expect(external, hasLength(2));
+      expect(external.first.scheme, 'whatsapp');
+      expect(external.last.host, 'wa.me');
+    });
+  });
 }

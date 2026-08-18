@@ -45,4 +45,12 @@ class AppConfig {
   static const String reminderChannelName = 'تذكير المواعيد';
   static const String reminderChannelDescription =
       'التنبيه اللي يرنّ قبل الموعد';
+
+  /// قناة صفّارة وقت الموعد نفسه — منفصلة عن قناة التذكير لأن أندرويد
+  /// بيجمّد صوت القناة بعد إنشائها: صوت الصفّارة (res/raw/siren) لازم
+  /// قناة جديدة. بتشتغل على مجرى المنبّه فبترنّ حتى مع الصامت وعدم الإزعاج.
+  static const String alarmChannelId = 'meeting_alarms_v1';
+  static const String alarmChannelName = 'صفّارة وقت الموعد';
+  static const String alarmChannelDescription =
+      'إنذار قوي يرنّ في وقت الموعد نفسه';
 }
