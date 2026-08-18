@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- خلفية شاشة الفتح — أخضر التطبيق. اللون المباشر في android:drawable
+         مرفوض من aapt، لازم مورد لون يتشاور عليه. -->
+    <color name="splash_background">#0A4D3A</color>
+</resources>

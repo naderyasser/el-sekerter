@@ -47,6 +47,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # التاريخ كامل عشان rev-list --count يدي رقم نسخة تصاعدي.
+          fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -57,6 +60,31 @@ jobs:
           cache: true
       - run: flutter pub get
         working-directory: app
+      - name: مفتاح التوقيع
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          # نفس مفتاح apk-dist.yml — توقيع موحّد عشان التحديثات تتقبل.
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::السر ANDROID_KEYSTORE_B64 مش متظبط (Settings → Secrets → Actions)."
+            exit 1
+          fi
+          # تشخيص آمن (مايكشفش السر): الطول وعدد الحروف الصالحة —
+          # المفتاح الكامل ~2855 حرف base64. لو أقل بكتير يبقى اللصق ناقص.
+          len=${#KEYSTORE_B64}
+          valid=$(printf '%s' "$KEYSTORE_B64" | tr -cd 'A-Za-z0-9+/=' | wc -c)
+          echo "طول السر: $len حرف — منها صالح كـbase64: $valid (المتوقع ~2855)"
+          # ‎-di بيتجاهل أي حروف مش من أبجدية base64 (مسافات، \r، أسطر).
+          printf '%s' "$KEYSTORE_B64" | tr -cd 'A-Za-z0-9+/=' \
+            | base64 -d > app/android/app/sekerter-release.jks
+          # تحقق إن الناتج مفتاح صالح فعلًا — لو اللصق كان ناقص نفشل
+          # برسالة واضحة بدل ما نوقّع في وسط البناء.
+          if ! keytool -list -keystore app/android/app/sekerter-release.jks \
+              -storepass sekerter2026 -alias sekerter >/dev/null 2>&1; then
+            echo "::error::محتوى السر مش مفتاح صالح — غالبًا النسخ كان ناقص."
+            echo "::error::احذف السر وأعد إضافته: افتح ANDROID_KEYSTORE_B64.txt وانسخ محتواه كاملًا (Ctrl+A ثم Ctrl+C) والصقه."
+            exit 1
+          fi
       - name: بناء APK
         working-directory: app
         env:
@@ -67,6 +95,7 @@ jobs:
           API_BASE_URL: ${{ vars.API_BASE_URL }}
         run: |
           flutter build apk --release \
+            --build-number=$(git rev-list --count HEAD) \
             --dart-define=API_BASE_URL="${API_BASE_URL:-https://el-sekerter.meena-alaqariya.com}"
       # الـAPK بينشر كإصدار مش كـartifact. سببين:
       #   • تخزين الـartifacts له حصة على مستوى الحساب، ولما تتملى البناء

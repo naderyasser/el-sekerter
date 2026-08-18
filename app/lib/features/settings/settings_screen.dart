@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../state/providers.dart';
 
@@ -24,6 +25,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool _saving = false;
   bool _obscureToken = true;
   bool? _notificationsGranted;
+  String _version = '';
 
   @override
   void initState() {
@@ -40,14 +42,34 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Future<void> _load() async {
     final settings = ref.read(settingsStoreProvider);
-    _url.text = await settings.apiBaseUrl();
-    _token.text = await settings.apiToken() ?? '';
+    final url = await settings.apiBaseUrl();
+    final token = await settings.apiToken() ?? '';
+    // الشاشة ممكن تتقفل والتحميل شغال — كتابة في controller اتعمل له
+    // dispose بترمي. القيم بتتقرا الأول وبعدين نتأكد إننا لسه عايشين.
+    if (!mounted) return;
+    _url.text = url;
+    _token.text = token;
     final granted = await ref.read(schedulerProvider).hasPermission();
+    // رقم النسخة — عشان أي بلاغ مشكلة نعرف على طول هو على أنهي بيلد.
+    String version;
+    try {
+      final info = await PackageInfo.fromPlatform();
+      version = 'نسخة ${info.version} (بناء ${info.buildNumber})';
+    } on Exception {
+      version = ''; // بيئة الاختبارات — مافيش منصة تسأليها.
+    }
     if (!mounted) return;
     setState(() {
       _loading = false;
       _notificationsGranted = granted;
+      _version = version;
     });
+  }
+
+  Future<void> _testSiren() async {
+    await ref.read(schedulerProvider).ringSirenNow();
+    if (!mounted) return;
+    _snack('لو ما سمعت صفّارة الحين، في مشكلة أذونات — كلمنا.');
   }
 
   Future<void> _requestNotifications() async {
@@ -125,6 +147,19 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         padding: const EdgeInsets.all(24),
         children: [
           if (widget.isSetup) ...[
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 20),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(24),
+                  child: Image.asset(
+                    'assets/logo/logo.png',
+                    width: 96,
+                    height: 96,
+                  ),
+                ),
+              ),
+            ),
             Text(
               'وصّل التطبيق بسيرفرك',
               style: Theme.of(context).textTheme.titleMedium,
@@ -199,6 +234,32 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     child: const Text('اسمح'),
                   ),
           ),
+          // تجربة فورية لصفّارة وقت الموعد — نفس القناة ونفس الصوت.
+          // بتحسم على طول: المشكلة في الصوت/الأذونات ولا في الجدولة.
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(
+              Icons.campaign_outlined,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            title: const Text('صفّارة الإنذار'),
+            subtitle: const Text('اللي بترنّ في وقت الموعد نفسه.'),
+            trailing: TextButton(
+              onPressed: _testSiren,
+              child: const Text('جرّبها الحين'),
+            ),
+          ),
+          if (_version.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            Center(
+              child: Text(
+                _version,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );

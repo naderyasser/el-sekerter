@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -50,10 +52,38 @@ class _PermissionGateState extends ConsumerState<PermissionGate>
   Future<void> _request() async {
     final scheduler = ref.read(schedulerProvider);
     await scheduler.requestPermissions();
+    await _requestDeviceAccess();
+    // المستخدم ممكن يقفل التطبيق والطلب لسه شغال — ref بعد dispose بترمي.
+    if (!mounted) return;
     await _check();
   }
 
+  /// كل أذونات الجهاز مرة واحدة من أول فتحة — طلب صاحب العمل الصريح بعد
+  /// ما اكتشف إنه لازم يفتّح كل حاجة بإيده: المايك (التسجيل الصوتي)،
+  /// جهات الاتصال (يلاقي «أبو سعد»)، الاتصال (يطلب الرقم مباشرة)،
+  /// واستثناء البطارية — أخطرهم: أجهزة كتير بتقتل المنبّهات المجدولة
+  /// لتوفير الطاقة، فالصفّارة ما ترنّش رغم إن كل الأذونات خضرا.
+  Future<void> _requestDeviceAccess() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await [
+        Permission.microphone,
+        Permission.contacts,
+        Permission.phone,
+      ].request();
+      if (!await Permission.ignoreBatteryOptimizations.isGranted) {
+        // بيطلّع حوار نظام «السماح للتطبيق يشتغل في الخلفية؟».
+        await Permission.ignoreBatteryOptimizations.request();
+      }
+    } on Exception catch (e) {
+      // رفض أو منصة من غير الإضافة (اختبارات الجهاز المضيف) — التطبيق
+      // يكمل شغال والتحذيرات بتبان لكل إذن ناقص في مكانه.
+      debugPrint('طلب أذونات الجهاز فشل: $e');
+    }
+  }
+
   Future<void> _check() async {
+    if (!mounted) return;
     final scheduler = ref.read(schedulerProvider);
     final granted = await scheduler.hasPermission();
     final exact = await scheduler.exactAlarmAllowed();
