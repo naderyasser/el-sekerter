@@ -142,6 +142,8 @@ void main() {
   Future<List<String>> pendingTitles() async {
     final all = await probe.pendingNotificationRequests();
     return all
+        // التذكيرات المسبقة وصفّارات وقت الموعد — من غير ملخصات الصبح.
+        // (الرسالة المجدولة remind_before=0 بتاخد صفّارة بس، فلازم تدخل هنا.)
         .where((r) => r.id < 1900000000)
         .map((r) => r.title ?? '')
         .toList();

@@ -55,9 +55,16 @@ void main() {
     repeat: repeat,
   );
 
+  // التذكير المسبق والصفّارة والملخص لهم نطاقات ids منفصلة (شوف
+  // reminder_scheduler.dart) — الفلاتر دي بتفرّقهم في الفحص.
   Future<List<PendingNotificationRequest>> pendingReminders() async {
     final all = await probe.pendingNotificationRequests();
-    return all.where((r) => r.id < 1900000000).toList();
+    return all.where((r) => r.id < 1000000000).toList();
+  }
+
+  Future<List<PendingNotificationRequest>> pendingSirens() async {
+    final all = await probe.pendingNotificationRequests();
+    return all.where((r) => r.id >= 1000000000 && r.id < 1900000000).toList();
   }
 
   setUpAll(() async {
@@ -99,6 +106,13 @@ void main() {
       (c) => c.id == AppConfig.reminderChannelId,
     );
     expect(channel.importance, Importance.max);
+
+    // وقناة الصفّارة متسجّلة كمان بصوت الإنذار من res/raw — لو الملف
+    // الصوتي مش في الـAPK إنشاء القناة بيفشل أو الصوت بيرجع فاضي.
+    expect(ids, contains(AppConfig.alarmChannelId));
+    final alarm = channels.firstWhere((c) => c.id == AppConfig.alarmChannelId);
+    expect(alarm.importance, Importance.max);
+    expect(alarm.sound, isNotNull);
   });
 
   testWidgets('rescheduleAll بتحجز تذكير حقيقي عند أندرويد', (tester) async {
@@ -107,6 +121,25 @@ void main() {
     final pending = await pendingReminders();
     expect(pending, hasLength(1));
     expect(pending.single.title, 'اجتماع أبو سعد');
+
+    // ومعاه صفّارة إنذار محجوزة في وقت الموعد نفسه.
+    final sirens = await pendingSirens();
+    expect(sirens, hasLength(1));
+    expect(sirens.single.title, contains('اجتماع أبو سعد'));
+  });
+
+  testWidgets('موعد بتذكير صفر: صفّارة واحدة في وقته — مش إشعارين', (
+    tester,
+  ) async {
+    // الرسايل المجدولة («ابعت لفلان») بتتسجّل remind_before = 0. قبل
+    // فصل الصفّارة ده كان إشعار عادي واحد؛ دلوقتي المفروض صفّارة واحدة
+    // بس من غير تذكير مسبق مكرر على نفس اللحظة.
+    await scheduler.rescheduleAll([
+      appt('zero-1', 'ابعت لأبو سعد', remindBefore: 0),
+    ]);
+
+    expect(await pendingReminders(), isEmpty);
+    expect(await pendingSirens(), hasLength(1));
   });
 
   testWidgets('المتكرر اللي فاتت مرّته الأولى لسه محجوز — مش ميّت', (
@@ -187,13 +220,17 @@ void main() {
     expect(pending, hasLength(2));
   });
 
-  testWidgets('cancel بتشيل الحجز من النظام', (tester) async {
+  testWidgets('cancel بتشيل الحجزين من النظام — التذكير والصفّارة', (
+    tester,
+  ) async {
     final one = appt('cancel-1', 'هيتلغي');
     await scheduler.rescheduleAll([one]);
     expect(await pendingReminders(), hasLength(1));
+    expect(await pendingSirens(), hasLength(1));
 
     await scheduler.cancel(one.id);
     expect(await pendingReminders(), isEmpty);
+    expect(await pendingSirens(), isEmpty);
   });
 
   testWidgets('قاعدة البيانات الحقيقية على أندرويد بتحفظ وبترجّع', (

@@ -36,7 +36,12 @@ class ReminderScheduler {
   /// كام دقيقة يتأجّل التذكير لما يضغط «أجّل».
   static const Duration snoozeBy = Duration(minutes: 15);
 
-  /// معرّفات إشعارات ملخص الصبح بعيدة عن نطاق التذكيرات العادية.
+  /// نطاقات معرّفات الإشعارات — منفصلة عشان الإلغاء والفحص يعرفوا يفرّقوا:
+  ///   • التذكير المسبق:  0 .. 899,999,999
+  ///   • صفّارة وقت الموعد: 1,000,000,000 .. 1,899,999,999
+  ///   • ملخص الصبح: من 1,900,000,000
+  static const int _idSpan = 900000000;
+  static const int _alarmIdBase = 1000000000;
   static const int _summaryIdBase = 1900000000;
 
   /// ساعة ملخص الصبح.
@@ -138,6 +143,19 @@ class ReminderScheduler {
         audioAttributesUsage: AudioAttributesUsage.alarm,
       ),
     );
+    // قناة الصفّارة: نفس مجرى المنبّه بس بصوت إنذار حقيقي (res/raw/siren)
+    // بدل نغمة الإشعار — طلب صاحب العمل الحرفي: «إنذار قوي جدًا في ميعاد
+    // الميتنج يعمل صفّارة». قناة منفصلة لأن صوت القناة بيتجمّد بعد إنشائها.
+    await _android?.createNotificationChannel(
+      const AndroidNotificationChannel(
+        AppConfig.alarmChannelId,
+        AppConfig.alarmChannelName,
+        description: AppConfig.alarmChannelDescription,
+        importance: Importance.max,
+        sound: RawResourceAndroidNotificationSound('siren'),
+        audioAttributesUsage: AudioAttributesUsage.alarm,
+      ),
+    );
   }
 
   /// يطلب أذونات الإشعارات. بيرجّع false لو المستخدم رفض.
@@ -196,25 +214,35 @@ class ReminderScheduler {
         ? AndroidScheduleMode.exactAllowWhileIdle
         : AndroidScheduleMode.inexactAllowWhileIdle;
 
+    // لكل موعد **اتنين** إشعار: تذكير مسبق (قبل الموعد بالمدة المختارة)
+    // وصفّارة إنذار في وقت الموعد نفسه. الصفّارة اتضافت لأن صاحب العمل
+    // كان فاهم إن التطبيق هيرنّ في الميعاد نفسه — وكان التذكير المسبق بس.
     final now = DateTime.now();
-    final due = <(Appointment, DateTime)>[];
+    final due = <(Appointment, DateTime, bool)>[];
     for (final appointment in appointments.where((a) => !a.done)) {
+      final alarmAt = _nextAlarmTime(appointment, now);
+      if (alarmAt != null) due.add((appointment, alarmAt, true));
+
       final fireAt = _nextFireTime(appointment, now);
       // تذكير وقته عدّى وما بيتكررش مبينفعش يتجدول. الميعاد نفسه ممكن يكون
-      // لسه جاي (لو اتسجّل قبله بشوية) وده مقبول — بيظهر من غير رنّة.
-      if (fireAt != null) due.add((appointment, fireAt));
+      // لسه جاي (لو اتسجّل قبله بشوية) وده مقبول — بتفضل صفّارة وقته.
+      // ولو التذكير المسبق أصلًا على وقت الموعد نفسه (remind_before = 0)
+      // مايتكررش مرتين — الصفّارة أقوى وبتكفي.
+      if (fireAt != null && fireAt != alarmAt) {
+        due.add((appointment, fireAt, false));
+      }
     }
     due.sort((a, b) => a.$2.compareTo(b.$2));
 
-    for (final (appointment, fireAt) in due.take(
+    for (final (appointment, fireAt, isSiren) in due.take(
       AppConfig.maxScheduledReminders,
     )) {
-      await _schedule(appointment, fireAt, mode);
+      await _schedule(appointment, fireAt, mode, siren: isSiren);
     }
 
     if (due.length > AppConfig.maxScheduledReminders) {
       debugPrint(
-        'اتجدول ${AppConfig.maxScheduledReminders} من ${due.length} تذكير — '
+        'اتجدول ${AppConfig.maxScheduledReminders} من ${due.length} تنبيه — '
         'الباقي هيتجدول لما الأقرب يعدّي.',
       );
     }
@@ -298,13 +326,29 @@ class ReminderScheduler {
     if (appointment.repeat == Repeat.none) return null;
 
     // تأجيل عدّى وقته خلص مفعوله — نرجع لوقت التذكير الأساسي وندحرجه.
-    var base = appointment.at.subtract(
-      Duration(minutes: appointment.remindBeforeMinutes),
+    return _rollForward(
+      appointment.at.subtract(
+        Duration(minutes: appointment.remindBeforeMinutes),
+      ),
+      appointment.repeat,
+      now,
     );
+  }
+
+  /// وقت صفّارة الإنذار الجاية — وقت الموعد **نفسه**، مدحرج للمرة الجاية
+  /// لو الموعد متكرر ومرّته عدّت.
+  DateTime? _nextAlarmTime(Appointment appointment, DateTime now) {
+    if (appointment.at.isAfter(now)) return appointment.at;
+    if (appointment.repeat == Repeat.none) return null;
+    return _rollForward(appointment.at, appointment.repeat, now);
+  }
+
+  DateTime? _rollForward(DateTime start, Repeat repeat, DateTime now) {
+    var base = start;
     // بحد أقصى معقول عشان بيانات بايظة (تاريخ قديم بسنين يوميًا = آلاف
     // اللفّات) ما تعلّقش فتح التطبيق.
     for (var i = 0; i < 4000 && !base.isAfter(now); i++) {
-      base = switch (appointment.repeat) {
+      base = switch (repeat) {
         Repeat.daily => base.add(const Duration(days: 1)),
         Repeat.weekly => base.add(const Duration(days: 7)),
         Repeat.monthly => DateTime(
@@ -329,9 +373,13 @@ class ReminderScheduler {
 
   Future<void> _schedule(
     Appointment appointment,
-    DateTime fireAt, [
-    AndroidScheduleMode mode = AndroidScheduleMode.exactAllowWhileIdle,
-  ]) => _withFallback(mode, (m) => _scheduleWith(appointment, fireAt, m));
+    DateTime fireAt,
+    AndroidScheduleMode mode, {
+    bool siren = false,
+  }) => _withFallback(
+    mode,
+    (m) => _scheduleWith(appointment, fireAt, m, siren: siren),
+  );
 
   /// يجدول ويتصرف في رفض «الجدولة الدقيقة» بدل ما يرمي.
   ///
@@ -359,48 +407,68 @@ class ReminderScheduler {
     }
   }
 
+  /// أزرار «تم» و«أجّل» من الإشعار نفسه — من غير ما يفتح التطبيق.
+  /// showsUserInterface بيوصّل الضغطة للتطبيق وهو صاحي، وده أضمن
+  /// طريق من معالج الخلفية اللي بيتقتل على أجهزة كتير.
+  static const List<AndroidNotificationAction> _actions = [
+    AndroidNotificationAction(actionDone, 'تم', showsUserInterface: true),
+    AndroidNotificationAction(
+      actionSnooze,
+      'أجّل ربع ساعة',
+      showsUserInterface: true,
+    ),
+  ];
+
   Future<void> _scheduleWith(
     Appointment appointment,
     DateTime fireAt,
-    AndroidScheduleMode mode,
-  ) async {
+    AndroidScheduleMode mode, {
+    bool siren = false,
+  }) async {
+    // إشعار الصفّارة (وقت الموعد نفسه) أعنف من التذكير المسبق عن قصد:
+    // قناة بصوت إنذار حقيقي، وFLAG_INSISTENT (القيمة 4) بيخلّي الصوت
+    // يفضل شغّال في حلقة لحد ما المستخدم يسكّته بنفسه — زي منبّه بجد.
+    final android = siren
+        ? AndroidNotificationDetails(
+            AppConfig.alarmChannelId,
+            AppConfig.alarmChannelName,
+            channelDescription: AppConfig.alarmChannelDescription,
+            importance: Importance.max,
+            priority: Priority.high,
+            category: AndroidNotificationCategory.alarm,
+            fullScreenIntent: true,
+            sound: const RawResourceAndroidNotificationSound('siren'),
+            audioAttributesUsage: AudioAttributesUsage.alarm,
+            additionalFlags: Int32List.fromList(const [4]),
+            actions: _actions,
+          )
+        : const AndroidNotificationDetails(
+            AppConfig.reminderChannelId,
+            AppConfig.reminderChannelName,
+            channelDescription: AppConfig.reminderChannelDescription,
+            importance: Importance.max,
+            priority: Priority.high,
+            // فئة منبّه + ملء الشاشة + صوت المنبّه: التذكير يبان ويرنّ زي
+            // منبّه حقيقي حتى والشاشة مقفولة أو الجوال صامت.
+            category: AndroidNotificationCategory.alarm,
+            fullScreenIntent: true,
+            audioAttributesUsage: AudioAttributesUsage.alarm,
+            actions: _actions,
+          );
+
     await _plugin.zonedSchedule(
-      id: _notificationId(appointment.id),
-      title: appointment.title,
-      body: _body(appointment),
+      id: siren
+          ? _alarmNotificationId(appointment.id)
+          : _notificationId(appointment.id),
+      title: siren ? '🚨 ${appointment.title}' : appointment.title,
+      body: siren ? 'وقت موعدك الحين!' : _body(appointment),
       scheduledDate: tz.TZDateTime.from(fireAt, tz.local),
       payload: appointment.id,
       androidScheduleMode: mode,
       matchDateTimeComponents: _repeatComponent(appointment.repeat),
-      notificationDetails: const NotificationDetails(
-        android: AndroidNotificationDetails(
-          AppConfig.reminderChannelId,
-          AppConfig.reminderChannelName,
-          channelDescription: AppConfig.reminderChannelDescription,
-          importance: Importance.max,
-          priority: Priority.high,
-          // فئة منبّه + ملء الشاشة + صوت المنبّه: التذكير يبان ويرنّ زي
-          // منبّه حقيقي حتى والشاشة مقفولة أو الجوال صامت.
-          category: AndroidNotificationCategory.alarm,
-          fullScreenIntent: true,
-          audioAttributesUsage: AudioAttributesUsage.alarm,
-          // «تم» و«أجّل» من الإشعار نفسه — من غير ما يفتح التطبيق.
-          // showsUserInterface بيوصّل الضغطة للتطبيق وهو صاحي، وده أضمن
-          // طريق من معالج الخلفية اللي بيتقتل على أجهزة كتير.
-          actions: [
-            AndroidNotificationAction(
-              actionDone,
-              'تم',
-              showsUserInterface: true,
-            ),
-            AndroidNotificationAction(
-              actionSnooze,
-              'أجّل ربع ساعة',
-              showsUserInterface: true,
-            ),
-          ],
-        ),
-        iOS: DarwinNotificationDetails(
+      notificationDetails: NotificationDetails(
+        android: android,
+        iOS: const DarwinNotificationDetails(
           presentAlert: true,
           presentBadge: true,
           presentSound: true,
@@ -441,10 +509,16 @@ class ReminderScheduler {
     Repeat.yearly => DateTimeComponents.dateAndTime,
   };
 
-  /// الـid عندنا نص والـAPI عايز int موجب في 32 بت.
+  /// الـid عندنا نص والـAPI عايز int موجب في 32 بت — محصور في نطاق
+  /// التذكيرات (شوف تعليق النطاقات فوق).
   int _notificationId(String appointmentId) =>
-      appointmentId.hashCode & 0x7fffffff;
+      (appointmentId.hashCode & 0x7fffffff) % _idSpan;
 
-  Future<void> cancel(String appointmentId) =>
-      _plugin.cancel(id: _notificationId(appointmentId));
+  int _alarmNotificationId(String appointmentId) =>
+      _alarmIdBase + (appointmentId.hashCode & 0x7fffffff) % _idSpan;
+
+  Future<void> cancel(String appointmentId) async {
+    await _plugin.cancel(id: _notificationId(appointmentId));
+    await _plugin.cancel(id: _alarmNotificationId(appointmentId));
+  }
 }
