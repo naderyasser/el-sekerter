@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  أيقونة الإشعار بتتنده من كود Dart بالاسم كنص:
+      AndroidInitializationSettings('@drawable/ic_stat_sekerter')
+  فمصغّر الموارد مابيشوفش أي مرجع ليها في الكود الأصلي وبيشيلها من الـAPK.
+  النتيجة اللي حصلت فعلًا: تهيئة الإشعارات بترمي invalid_icon في main()
+  قبل runApp، فالتطبيق يعلّق على شاشة الفتح ومايفتحش أبدًا.
+
+  والصورة اللي بتظهر جوه التطبيق (splash_logo) نفس القصة — بتتنده من
+  XML شاشة الفتح، فبنثبّتها كمان للأمان.
+-->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/ic_stat_sekerter,@drawable/splash_logo,@color/splash_background" />

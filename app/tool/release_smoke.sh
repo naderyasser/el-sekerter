@@ -24,5 +24,21 @@ if adb logcat -d | grep -q "FATAL EXCEPTION"; then
   exit 1
 fi
 
+# استثناء Dart غير ممسوك بيقتل main() قبل runApp — العملية بتفضل عايشة
+# والمستخدم يفضل على شاشة الفتح للأبد. حصل فعلًا مع أيقونة الإشعار
+# اللي شالها مصغّر الموارد. «العملية عايشة» مش دليل كفاية.
+if adb logcat -d | grep -q "Unhandled Exception"; then
+  echo "::error::استثناء Dart غير ممسوك عند الإقلاع — التطبيق مش هيفتح"
+  adb logcat -d | grep -B2 -A20 "Unhandled Exception" | tail -50 || true
+  exit 1
+fi
+
+# والدليل القاطع: هل الواجهة اترسمت أصلًا؟ لو التطبيق معلّق على شاشة
+# الفتح، مافيش FlutterView في شجرة النوافذ.
+if ! adb shell dumpsys window windows 2>/dev/null | grep -q "com.elsekerter.sekerter"; then
+  echo "::error::نافذة التطبيق مش موجودة — الواجهة ما اترسمتش"
+  exit 1
+fi
+
 adb exec-out screencap -p > release-boot.png
 echo "النسخة النهائية فتحت وعايشة (pid=$pid) ✅"
