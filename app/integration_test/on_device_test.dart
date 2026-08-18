@@ -64,6 +64,24 @@ void main() {
     await scheduler.initialize();
   });
 
+  testWidgets('أيقونة شريط الحالة موجودة في الـAPK — مش متشالة بالتصغير', (
+    tester,
+  ) async {
+    // التصغير (resource shrinking) شال ic_stat_sekerter من نسخة release
+    // لأنها بتتنده من Dart بالاسم كنص ومفيش مرجع ليها في الكود الأصلي.
+    // النتيجة: تهيئة الإشعارات ترمي invalid_icon في main() قبل runApp،
+    // والتطبيق يعلّق على شاشة الفتح للأبد. keep.xml بيمنع ده — والاختبار
+    // ده بيقفل الباب: initialize بتنجح يعني المورد موجود ومقروء.
+    final plugin = FlutterLocalNotificationsPlugin();
+    await plugin.initialize(
+      settings: const InitializationSettings(
+        android: AndroidInitializationSettings('@drawable/ic_stat_sekerter'),
+      ),
+    );
+    // لو المورد ناقص، السطر اللي فوق بيرمي PlatformException قبل ما نوصل هنا.
+    expect(true, isTrue);
+  });
+
   testWidgets('قناة v2 بصوت المنبّه متسجّلة عند النظام والقديمة اتمسحت', (
     tester,
   ) async {
