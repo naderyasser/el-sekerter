@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# تدخين النسخة النهائية على أندرويد: تثبيت + تشغيل + تأكد إنها عايشة + صورة.
+#
+# ملف مستقل لأن reactivecircus/android-emulator-runner بينفّذ كل سطر من
+# script: بـ sh -c لوحده — أي جملة متعددة الأسطر بتتقطع وبتفشل بـ
+# «Syntax error: expecting fi» (حصل فعلًا). هنا بنتنده بسطر واحد.
+set -euo pipefail
+
+adb install -r build/app/outputs/flutter-apk/app-release.apk
+adb logcat -c
+adb shell am start -n com.elsekerter.sekerter/.MainActivity
+sleep 25
+
+pid=$(adb shell pidof com.elsekerter.sekerter || true)
+if [ -z "$pid" ]; then
+  echo "::error::النسخة النهائية وقعت عند الإقلاع — مش هتتنشر"
+  adb logcat -d | grep -iE "FATAL|AndroidRuntime" | tail -50 || true
+  exit 1
+fi
+
+if adb logcat -d | grep -q "FATAL EXCEPTION"; then
+  echo "::error::انهيار في اللوج رغم إن العملية عايشة"
+  adb logcat -d | grep -A25 "FATAL EXCEPTION" | tail -60 || true
+  exit 1
+fi
+
+# استثناء Dart غير ممسوك بيقتل main() قبل runApp — العملية بتفضل عايشة
+# والمستخدم يفضل على شاشة الفتح للأبد. حصل فعلًا مع أيقونة الإشعار
+# اللي شالها مصغّر الموارد. «العملية عايشة» مش دليل كفاية.
+if adb logcat -d | grep -q "Unhandled Exception"; then
+  echo "::error::استثناء Dart غير ممسوك عند الإقلاع — التطبيق مش هيفتح"
+  adb logcat -d | grep -B2 -A20 "Unhandled Exception" | tail -50 || true
+  exit 1
+fi
+
+# والدليل القاطع: هل الواجهة اترسمت أصلًا؟ لو التطبيق معلّق على شاشة
+# الفتح، مافيش FlutterView في شجرة النوافذ.
+if ! adb shell dumpsys window windows 2>/dev/null | grep -q "com.elsekerter.sekerter"; then
+  echo "::error::نافذة التطبيق مش موجودة — الواجهة ما اترسمتش"
+  exit 1
+fi
+
+# التصغير (R8) بيشيل كود الإضافات اللي بتتنده عبر method channels لو مفيش
+# keep rules — فالنداء يفشل بـMissingPluginException. أول ما التطبيق يفتح
+# بيطلب إذن الإشعارات (permission_handler + flutter_local_notifications)،
+# فلو الإضافات متشالة الخطأ بيبان في اللوج على طول. ده بيمسك الرجوع
+# لنسخة release مكسورة قبل ما توصل لأي مستخدم.
+if adb logcat -d | grep -qE "MissingPluginException|No implementation found for method"; then
+  echo "::error::إضافة native مش موجودة في نسخة release — غالبًا التصغير شالها"
+  adb logcat -d | grep -B2 -A8 -E "MissingPluginException|No implementation found" | tail -40 || true
+  exit 1
+fi
+
+adb exec-out screencap -p > release-boot.png
+echo "النسخة النهائية فتحت وعايشة (pid=$pid) ✅"

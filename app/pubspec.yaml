@@ -1,7 +1,7 @@
 name: sekerter
 description: "السكرتير الخاص — شات بوت بيمسك مواعيدك ويفكّرك بيها."
 publish_to: 'none'
-version: 0.1.0+1
+version: 0.2.0+1
 
 environment:
   sdk: ^3.13.0
@@ -38,14 +38,36 @@ dependencies:
   url_launcher: ^6.3.2
   android_intent_plus: ^6.1.0
 
+  # عرض رقم النسخة في الإعدادات — عشان نعرف المستخدم على أنهي بيلد
+  package_info_plus: ^10.2.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
   sqflite_common_ffi: ^2.4.2
+  # اختبارات بتتنفذ على جهاز/محاكي أندرويد حقيقي — الجدولة والإشعارات
+  # عند نظام التشغيل نفسه، مش عند بديل مسجّل. بتتشغل في deep-test.yml.
+  integration_test:
+    sdk: flutter
+  # توليد أيقونات المشغّل بكل الكثافات + الشكل التكيفي من أصل واحد.
+  # الأصل بيتولد من scripts في assets/logo — شغّل بعد أي تغيير فيه:
+  #   dart run flutter_launcher_icons
+  flutter_launcher_icons: ^0.14.4
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: assets/logo/icon.png
+  adaptive_icon_background: assets/logo/icon_background.png
+  adaptive_icon_foreground: assets/logo/icon_foreground.png
+  remove_alpha_ios: true
 
 flutter:
   uses-material-design: true
+
+  assets:
+    - assets/logo/logo.png
 
   # الخط الافتراضي بيعرض العربي ضعيف — المسافات بين الحروف مش مظبوطة
   # والأوزان محدودة. Almarai معمول للعربي أصلًا ومجرّب في الإنتاج.

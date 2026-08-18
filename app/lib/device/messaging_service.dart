@@ -30,6 +30,50 @@ enum SendOutcome {
 }
 
 class MessagingService {
+  /// [openExternal] و[openWithApp] قابلين للحقن عشان الاختبارات تتحقق من
+  /// ترتيب المحاولات من غير ما تفتح تطبيقات بجد. [isAndroid] كذلك — لأن
+  /// اختبارات الجهاز المضيف بتتشغل على لينكس ومسار الـintent أندرويد بس.
+  MessagingService({
+    Future<bool> Function(Uri uri)? openExternal,
+    Future<bool> Function(String package, Uri uri)? openWithApp,
+    bool? isAndroid,
+  }) : _openExternal = openExternal ?? _launch,
+       _openWithApp = openWithApp ?? _launchInApp,
+       _isAndroid = isAndroid ?? Platform.isAndroid;
+
+  final Future<bool> Function(Uri uri) _openExternal;
+  final Future<bool> Function(String package, Uri uri) _openWithApp;
+  final bool _isAndroid;
+
+  static Future<bool> _launch(Uri uri) async {
+    try {
+      return await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } on Exception {
+      // مافيش تطبيق يفتح الرابط ده — بنرجّع false والمنادي يجرّب البديل.
+      return false;
+    }
+  }
+
+  /// يفتح الرابط جوّه تطبيق محدّد بالاسم (intent صريح على أندرويد).
+  static Future<bool> _launchInApp(String package, Uri uri) async {
+    final intent = AndroidIntent(
+      action: 'android.intent.action.VIEW',
+      data: uri.toString(),
+      package: package,
+    );
+    try {
+      // canResolveActivity الأول: launch على حزمة مش منصّبة بيرمي
+      // ActivityNotFoundException، وبنحب نجرّب البديل بهدوء بدل الرمي.
+      if (await intent.canResolveActivity() ?? false) {
+        await intent.launch();
+        return true;
+      }
+    } on Exception {
+      // نجرّب البديل اللي بعده.
+    }
+    return false;
+  }
+
   /// يطلب رقم. على أندرويد مباشرة لو الإذن متاح، وإلا يفتح شاشة الاتصال.
   Future<bool> call(String phone) async {
     final number = clean(phone);
@@ -53,21 +97,43 @@ class MessagingService {
       }
     }
 
-    return _open(Uri(scheme: 'tel', path: number));
+    return _openExternal(Uri(scheme: 'tel', path: number));
   }
 
-  /// يفتح واتساب والرسالة مكتوبة. الإرسال بضغطة من صاحب العمل.
+  /// حزمتا واتساب: العادي وواتساب الأعمال — أصحاب الأعمال (زي عميلنا)
+  /// غالبًا مركّبين النسخة التجارية، وسكيم whatsapp:// ممكن يروح للغلط.
+  static const List<String> whatsappPackages = [
+    'com.whatsapp',
+    'com.whatsapp.w4b',
+  ];
+
+  /// يفتح واتساب على محادثة الرقم **والرسالة مكتوبة جاهزة**. الإرسال
+  /// بضغطة من صاحب العمل.
+  ///
+  /// الترتيب مقصود، وده تصليح لعطل حصل فعلًا («بيفتح الواتس بس من غير
+  /// الرسالة»): سكيم whatsapp:// على نسخ واتساب الجديدة بيفتح التطبيق
+  /// وبيتجاهل النص على أجهزة كتير. الطريق الموثّق والثابت هو رابط
+  /// wa.me — بس لو اتبعت للنظام «مفتوح» ممكن يفتح في المتصفح. فبنبعته
+  /// بـintent صريح لحزمة واتساب نفسها (وبعدها نسخة الأعمال)، وبس لو
+  /// الاتنين مش منصّبين بنرجع للسكيم القديم وwa.me العام كاحتياطي.
   Future<SendOutcome> whatsapp(String phone, String text) async {
     final number = international(phone);
-
-    // wa.me هو الرابط الرسمي وبيشتغل على الجهازين.
-    final uri = Uri.parse(
+    final web = Uri.parse(
       'https://wa.me/$number?text=${Uri.encodeComponent(text)}',
     );
 
-    if (await canLaunchUrl(uri)) {
-      return await _open(uri) ? SendOutcome.opened : SendOutcome.failed;
+    if (_isAndroid) {
+      for (final package in whatsappPackages) {
+        if (await _openWithApp(package, web)) return SendOutcome.opened;
+      }
     }
+
+    final direct = Uri.parse(
+      'whatsapp://send?phone=$number&text=${Uri.encodeComponent(text)}',
+    );
+    if (await _openExternal(direct)) return SendOutcome.opened;
+    if (await _openExternal(web)) return SendOutcome.opened;
+
     return SendOutcome.appMissing;
   }
 
@@ -80,15 +146,7 @@ class MessagingService {
       path: number,
       queryParameters: {'body': text},
     );
-    return await _open(uri) ? SendOutcome.opened : SendOutcome.failed;
-  }
-
-  Future<bool> _open(Uri uri) async {
-    try {
-      return await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } on Exception {
-      return false;
-    }
+    return await _openExternal(uri) ? SendOutcome.opened : SendOutcome.failed;
   }
 
   @visibleForTesting

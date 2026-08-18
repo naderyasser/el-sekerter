@@ -27,6 +27,7 @@ import 'package:timezone/data/latest_all.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 
 import 'package:sekerter/api/api_client.dart';
+import 'package:sekerter/core/config.dart';
 import 'package:sekerter/data/appointment_store.dart';
 import 'package:sekerter/data/chat_store.dart';
 import 'package:sekerter/data/database.dart';
@@ -46,6 +47,8 @@ import 'package:sekerter/state/providers.dart';
 /// بيسجّل نداءات الجدولة بدل ما يكلّم نظام التشغيل.
 class RecordingPlugin implements FlutterLocalNotificationsPlugin {
   final List<Invocation> scheduled = [];
+  final List<Invocation> shown = [];
+  final List<int> cancelled = [];
   int cancelAllCount = 0;
 
   @override
@@ -53,6 +56,12 @@ class RecordingPlugin implements FlutterLocalNotificationsPlugin {
     switch (invocation.memberName) {
       case #zonedSchedule:
         scheduled.add(invocation);
+        return Future<void>.value();
+      case #show:
+        shown.add(invocation);
+        return Future<void>.value();
+      case #cancel:
+        cancelled.add(invocation.namedArguments[#id] as int);
         return Future<void>.value();
       case #cancelAll:
         cancelAllCount += 1;
@@ -103,6 +112,10 @@ class FakeSpeechEngine implements SpeechToText {
   void Function(SpeechRecognitionError)? capturedOnError;
   void Function(String)? capturedOnStatus;
 
+  /// اللغات اللي المحرّك «بيعلن» عنها — قابلة للتغيير عشان نحاكي أجهزة
+  /// قايمتها ناقصة أو من غير عربي خالص.
+  List<LocaleName> localeList = [LocaleName('ar_SA', 'العربية السعودية')];
+
   @override
   dynamic noSuchMethod(Invocation invocation) {
     switch (invocation.memberName) {
@@ -114,9 +127,7 @@ class FakeSpeechEngine implements SpeechToText {
             invocation.namedArguments[#onStatus] as void Function(String)?;
         return Future<bool>.value(true);
       case #locales:
-        return Future<List<LocaleName>>.value([
-          LocaleName('ar_SA', 'العربية السعودية'),
-        ]);
+        return Future<List<LocaleName>>.value(localeList);
       case #isListening:
         return false;
       default:
@@ -303,10 +314,16 @@ class Harness {
 
   AppointmentStore get store => container.read(appointmentStoreProvider);
 
-  /// التذكيرات بس، من غير ملخصات الصبح — الملخص إشعار إضافي مش تذكير.
+  /// التذكيرات المسبقة بس — الصفّارة والملخص لهم نطاقات ids منفصلة.
   List<Invocation> get reminders => plugin.scheduled
-      .where((c) => (c.namedArguments[#id] as int) < 1900000000)
+      .where((c) => (c.namedArguments[#id] as int) < 1000000000)
       .toList();
+
+  /// صفّارات وقت الموعد نفسه.
+  List<Invocation> get sirens => plugin.scheduled.where((c) {
+    final id = c.namedArguments[#id] as int;
+    return id >= 1000000000 && id < 1900000000;
+  }).toList();
 
   List<Invocation> get summaries => plugin.scheduled
       .where((c) => (c.namedArguments[#id] as int) >= 1900000000)
@@ -584,12 +601,14 @@ void main() {
 
       // ما انبعتش حالًا.
       expect(harness.messaging.whatsapps, isEmpty);
-      // اتخزّنت كموعد بنص الرسالة، وتذكيرها في وقت الإرسال نفسه.
+      // اتخزّنت كموعد بنص الرسالة، ورنّتها في وقت الإرسال نفسه — وبما إن
+      // التذكير على لحظة الموعد ذاتها، بتاخد صفّارة الإنذار مش تذكير مسبق.
       final saved = (await harness.store.all()).single;
       expect(saved.title, contains('سعد'));
       expect(saved.notes, 'صباح الخير، موعدنا اليوم');
       expect(saved.remindBeforeMinutes, 0);
-      expect(harness.reminders, hasLength(1));
+      expect(harness.reminders, isEmpty);
+      expect(harness.sirens, hasLength(1));
     });
   });
 
@@ -694,13 +713,20 @@ void main() {
       await harness.send('سجّل كل المواعيد دي');
 
       expect(await harness.store.all(), hasLength(60));
-      expect(harness.reminders, hasLength(50));
+      // كل موعد بياخد تنبيهين (تذكير مسبق + صفّارة وقته)، والسقف ٥٠
+      // تنبيه إجمالًا — يعني أقرب ٢٥ موعد كاملين.
+      expect(
+        harness.reminders.length + harness.sirens.length,
+        AppConfig.maxScheduledReminders,
+      );
+      expect(harness.reminders, hasLength(25));
+      expect(harness.sirens, hasLength(25));
       // الأقرب هو اللي اتجدول، مش عشوائي.
       final titles = harness.reminders
           .map((c) => c.namedArguments[#title] as String)
           .toList();
       expect(titles.first, 'موعد 1');
-      expect(titles, isNot(contains('موعد 51')));
+      expect(titles, isNot(contains('موعد 26')));
     });
   });
 
@@ -928,7 +954,7 @@ void main() {
       await scheduler.rescheduleAll([appt('a'), appt('b', hours: 5)]);
 
       final reminders = plugin.scheduled
-          .where((c) => (c.namedArguments[#id] as int) < 1900000000)
+          .where((c) => (c.namedArguments[#id] as int) < 1000000000)
           .toList();
       expect(reminders, hasLength(2));
       for (final call in reminders) {
@@ -965,6 +991,96 @@ void main() {
       expect(state.messages.last.text, contains('ما قدرت أضبط رنّة التذكير'));
       // الموعد نفسه اتسجّل — المشكلة كانت في الرنّة بس.
       expect(await harness.store.all(), hasLength(1));
+    });
+  });
+
+  group('إصلاح: المتكرر كان يرنّ أول مرة بس وبعدين يموت في صمت', () {
+    // rescheduleAll بتلغي كل حاجة وتعيد الجدولة مع كل فتح للتطبيق —
+    // والمتكرر اللي مرّته الأولى عدّت كان بيتفلتر لأن وقته الأصلي بقى
+    // في الماضي. «كل أحد الساعة ٩» كان معناها الفعلي «الأحد الجاي بس».
+
+    List<Invocation> remindersOf(RecordingPlugin plugin) => plugin.scheduled
+        .where((c) => (c.namedArguments[#id] as int) < 1000000000)
+        .toList();
+
+    test('أسبوعي عدّى أسبوعه الأول → يتجدول للأحد الجاي', () async {
+      final plugin = RecordingPlugin();
+      final weekly = Appointment(
+        id: 'w1',
+        title: 'اجتماع كل أحد',
+        at: DateTime.now().subtract(const Duration(days: 3)),
+        repeat: Repeat.weekly,
+      );
+
+      await ReminderScheduler(plugin).rescheduleAll([weekly]);
+
+      final scheduled = remindersOf(plugin);
+      expect(scheduled, hasLength(1));
+      final fireAt =
+          scheduled.single.namedArguments[#scheduledDate] as tz.TZDateTime;
+      expect(fireAt.isAfter(DateTime.now()), isTrue);
+      // المقارنة باللحظة مش بساعة الحائط — منطقة الاختبار (الرياض) غير
+      // منطقة الجهاز، ومقارنة .hour بينهم هي نفس الغلطة اللي الكود
+      // بيتحاشاها. المتوقع: التذكير الأصلي (الموعد - ساعة) + أسبوع واحد.
+      final expected = weekly.at
+          .subtract(const Duration(minutes: 60))
+          .add(const Duration(days: 7));
+      expect(fireAt.isAtSameMomentAs(expected), isTrue);
+      expect(
+        scheduled.single.namedArguments[#matchDateTimeComponents],
+        DateTimeComponents.dayOfWeekAndTime,
+      );
+    });
+
+    test('يومي قديم بأيام → يتجدول لبكرة مش يتفلتر', () async {
+      final plugin = RecordingPlugin();
+      final daily = Appointment(
+        id: 'd1',
+        title: 'دواء الضغط',
+        at: DateTime.now().subtract(const Duration(days: 10)),
+        repeat: Repeat.daily,
+      );
+
+      await ReminderScheduler(plugin).rescheduleAll([daily]);
+
+      final scheduled = remindersOf(plugin);
+      expect(scheduled, hasLength(1));
+      final fireAt =
+          scheduled.single.namedArguments[#scheduledDate] as tz.TZDateTime;
+      expect(fireAt.isAfter(DateTime.now()), isTrue);
+      expect(
+        fireAt.difference(DateTime.now()),
+        lessThan(const Duration(days: 1)),
+      );
+    });
+
+    test('تأجيل عدّى وقته على متكرر → يرجع لجدوله الأساسي', () async {
+      final plugin = RecordingPlugin();
+      final snoozed = Appointment(
+        id: 's1',
+        title: 'اجتماع كل أحد',
+        at: DateTime.now().subtract(const Duration(days: 3)),
+        repeat: Repeat.weekly,
+        // «أجّل ربع ساعة» من أسبوع فات — خلص مفعوله.
+        snoozeUntil: DateTime.now().subtract(const Duration(days: 3)),
+      );
+
+      await ReminderScheduler(plugin).rescheduleAll([snoozed]);
+
+      expect(remindersOf(plugin), hasLength(1));
+    });
+
+    test('غير المتكرر اللي فات وقته يتفلتر زي الأول بالظبط', () async {
+      final plugin = RecordingPlugin();
+      final past = Appointment(
+        id: 'p1',
+        title: 'موعد فات',
+        at: DateTime.now().subtract(const Duration(days: 1)),
+      );
+
+      await ReminderScheduler(plugin).rescheduleAll([past]);
+
+      expect(remindersOf(plugin), isEmpty);
     });
   });
 
@@ -1012,6 +1128,155 @@ void main() {
 
       expect(problem, isNull);
       expect(stopped, 1);
+    });
+  });
+
+  group('إصلاح: التفريغ الصوتي كان بيطلع إنجليزي مش مفهوم', () {
+    // الجذر: لو المحرّك ما أعلنش عن أي لغة عربية في locales() كنا بنسيب
+    // localeId فاضي، والمحرّك يقع على لغة الجهاز — إنجليزي غالبًا. المستخدم
+    // بيتكلم عربي بس، فالعربي بيُفرض دايمًا حتى لو مش في القائمة.
+
+    test('المحرّك من غير عربي في قايمته → نفرض ar_SA برضه', () async {
+      final engine = FakeSpeechEngine()
+        ..localeList = [LocaleName('en_US', 'English (US)')];
+      final service = SpeechService(engine);
+
+      await service.initialize();
+
+      expect(service.localeId, 'ar_SA');
+    });
+
+    test('فيه عربي تاني متاح (مصر مثلًا) → ناخده بدل الفرض', () async {
+      final engine = FakeSpeechEngine()
+        ..localeList = [
+          LocaleName('en_US', 'English (US)'),
+          LocaleName('ar_EG', 'العربية (مصر)'),
+        ];
+      final service = SpeechService(engine);
+
+      await service.initialize();
+
+      expect(service.localeId, 'ar_EG');
+    });
+  });
+
+  group('الميزة: صفّارة إنذار قوية في وقت الموعد نفسه', () {
+    // طلب صاحب العمل الحرفي: «عاوزه يعمل إنذار قوي جدًا في ميعاد الميتنج
+    // يعمل صفارة إنذار». التذكير المسبق (قبل الموعد بساعة) موجود زي ما هو،
+    // والجديد إشعار تاني في لحظة الموعد نفسها: قناة بصوت صفّارة حقيقي على
+    // مجرى المنبّه + FLAG_INSISTENT فالصوت يفضل شغّال لحد ما يسكّته بإيده.
+
+    List<Invocation> sirensOf(RecordingPlugin plugin) =>
+        plugin.scheduled.where((c) {
+          final id = c.namedArguments[#id] as int;
+          return id >= 1000000000 && id < 1900000000;
+        }).toList();
+
+    test('كل موعد بياخد صفّارة في وقته فوق التذكير المسبق', () async {
+      final plugin = RecordingPlugin();
+      final at = DateTime.now().add(const Duration(hours: 3));
+      final meeting = Appointment(id: 'm1', title: 'ميتنج مهم', at: at);
+
+      await ReminderScheduler(plugin).rescheduleAll([meeting]);
+
+      final sirens = sirensOf(plugin);
+      expect(sirens, hasLength(1));
+      final call = sirens.single;
+
+      final when = call.namedArguments[#scheduledDate] as tz.TZDateTime;
+      expect(when.isAtSameMomentAs(at), isTrue);
+      expect(call.namedArguments[#title], contains('ميتنج مهم'));
+
+      final details =
+          call.namedArguments[#notificationDetails] as NotificationDetails;
+      final android = details.android!;
+      expect(android.channelId, AppConfig.alarmChannelId);
+      expect(android.sound, isA<RawResourceAndroidNotificationSound>());
+      expect(
+        (android.sound as RawResourceAndroidNotificationSound).sound,
+        'siren',
+      );
+      // FLAG_INSISTENT (القيمة 4): الصفّارة تفضل شغّالة لحد ما تتسكّت.
+      expect(android.additionalFlags, contains(4));
+      expect(android.fullScreenIntent, isTrue);
+      expect(android.audioAttributesUsage, AudioAttributesUsage.alarm);
+    });
+
+    test('تذكير صفر دقايق → صفّارة واحدة مش إشعارين على نفس اللحظة', () async {
+      // الرسايل المجدولة («ابعت لفلان») بتتسجّل بتذكير صفر — التذكير
+      // المسبق والصفّارة كانوا هيقعوا على نفس الثانية.
+      final plugin = RecordingPlugin();
+      final scheduler = ReminderScheduler(plugin);
+
+      await scheduler.rescheduleAll([
+        Appointment(
+          id: 'z1',
+          title: 'ابعت لأبو سعد',
+          at: DateTime.now().add(const Duration(hours: 2)),
+          remindBeforeMinutes: 0,
+        ),
+      ]);
+
+      expect(sirensOf(plugin), hasLength(1));
+      final reminders = plugin.scheduled
+          .where((c) => (c.namedArguments[#id] as int) < 1000000000)
+          .toList();
+      expect(reminders, isEmpty);
+    });
+
+    test('متكرر فاتت مرّته → الصفّارة تتدحرج للمرة الجاية مش تموت', () async {
+      final plugin = RecordingPlugin();
+      final weekly = Appointment(
+        id: 'w-siren',
+        title: 'اجتماع كل أحد',
+        at: DateTime.now().subtract(const Duration(days: 3)),
+        repeat: Repeat.weekly,
+      );
+
+      await ReminderScheduler(plugin).rescheduleAll([weekly]);
+
+      final sirens = sirensOf(plugin);
+      expect(sirens, hasLength(1));
+      final when =
+          sirens.single.namedArguments[#scheduledDate] as tz.TZDateTime;
+      expect(
+        when.isAtSameMomentAs(weekly.at.add(const Duration(days: 7))),
+        isTrue,
+      );
+    });
+
+    test('«جرّبها الحين» بترنّ نفس الصفّارة فورًا — مش نسخة مخففة', () async {
+      // زرار التجربة في الإعدادات لازم يطلع بنفس القناة ونفس الصوت ونفس
+      // الإلحاح بتاع وقت الموعد — عشان نجاحه يبقى دليل حقيقي.
+      final plugin = RecordingPlugin();
+
+      await ReminderScheduler(plugin).ringSirenNow();
+
+      expect(plugin.shown, hasLength(1));
+      final details =
+          plugin.shown.single.namedArguments[#notificationDetails]
+              as NotificationDetails;
+      final android = details.android!;
+      expect(android.channelId, AppConfig.alarmChannelId);
+      expect(
+        (android.sound as RawResourceAndroidNotificationSound).sound,
+        'siren',
+      );
+      expect(android.additionalFlags, contains(4));
+    });
+
+    test('إلغاء الموعد بيلغي التذكير والصفّارة مع بعض', () async {
+      final plugin = RecordingPlugin();
+      final scheduler = ReminderScheduler(plugin);
+
+      await scheduler.cancel('m1');
+
+      expect(plugin.cancelled, hasLength(2));
+      expect(plugin.cancelled.where((id) => id < 1000000000), hasLength(1));
+      expect(
+        plugin.cancelled.where((id) => id >= 1000000000 && id < 1900000000),
+        hasLength(1),
+      );
     });
   });
 }

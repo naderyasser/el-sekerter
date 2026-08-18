@@ -36,7 +36,12 @@ class ReminderScheduler {
   /// كام دقيقة يتأجّل التذكير لما يضغط «أجّل».
   static const Duration snoozeBy = Duration(minutes: 15);
 
-  /// معرّفات إشعارات ملخص الصبح بعيدة عن نطاق التذكيرات العادية.
+  /// نطاقات معرّفات الإشعارات — منفصلة عشان الإلغاء والفحص يعرفوا يفرّقوا:
+  ///   • التذكير المسبق:  0 .. 899,999,999
+  ///   • صفّارة وقت الموعد: 1,000,000,000 .. 1,899,999,999
+  ///   • ملخص الصبح: من 1,900,000,000
+  static const int _idSpan = 900000000;
+  static const int _alarmIdBase = 1000000000;
   static const int _summaryIdBase = 1900000000;
 
   /// ساعة ملخص الصبح.
@@ -70,7 +75,11 @@ class ReminderScheduler {
     await _plugin.initialize(
       // مش const لأن فئات آيفون بتتبني وقت التشغيل.
       settings: InitializationSettings(
-        android: const AndroidInitializationSettings('@mipmap/ic_launcher'),
+        // أيقونة شريط الحالة: أندرويد بيعرضها كقناع أبيض، فالأيقونة الملونة
+        // كانت بتطلع مربع مصمت. دي «س» بيضا على شفاف — مرسومة لكل كثافة.
+        android: const AndroidInitializationSettings(
+          '@drawable/ic_stat_sekerter',
+        ),
         iOS: DarwinInitializationSettings(
           // الأذونات بنطلبها صراحة في شاشة الإعداد عشان نقدر نشرح للمستخدم
           // قبل ما النظام يسأله.
@@ -134,6 +143,19 @@ class ReminderScheduler {
         audioAttributesUsage: AudioAttributesUsage.alarm,
       ),
     );
+    // قناة الصفّارة: نفس مجرى المنبّه بس بصوت إنذار حقيقي (res/raw/siren)
+    // بدل نغمة الإشعار — طلب صاحب العمل الحرفي: «إنذار قوي جدًا في ميعاد
+    // الميتنج يعمل صفّارة». قناة منفصلة لأن صوت القناة بيتجمّد بعد إنشائها.
+    await _android?.createNotificationChannel(
+      const AndroidNotificationChannel(
+        AppConfig.alarmChannelId,
+        AppConfig.alarmChannelName,
+        description: AppConfig.alarmChannelDescription,
+        importance: Importance.max,
+        sound: RawResourceAndroidNotificationSound('siren'),
+        audioAttributesUsage: AudioAttributesUsage.alarm,
+      ),
+    );
   }
 
   /// يطلب أذونات الإشعارات. بيرجّع false لو المستخدم رفض.
@@ -192,23 +214,35 @@ class ReminderScheduler {
         ? AndroidScheduleMode.exactAllowWhileIdle
         : AndroidScheduleMode.inexactAllowWhileIdle;
 
+    // لكل موعد **اتنين** إشعار: تذكير مسبق (قبل الموعد بالمدة المختارة)
+    // وصفّارة إنذار في وقت الموعد نفسه. الصفّارة اتضافت لأن صاحب العمل
+    // كان فاهم إن التطبيق هيرنّ في الميعاد نفسه — وكان التذكير المسبق بس.
     final now = DateTime.now();
-    final due =
-        appointments
-            .where((a) => !a.done)
-            // تذكير وقته عدّى مبينفعش يتجدول. الميعاد نفسه ممكن يكون لسه جاي
-            // (لو اتسجّل قبله بشوية) وده مقبول — بيظهر في القايمة من غير رنّة.
-            .where((a) => a.remindAt.isAfter(now))
-            .toList()
-          ..sort((a, b) => a.remindAt.compareTo(b.remindAt));
+    final due = <(Appointment, DateTime, bool)>[];
+    for (final appointment in appointments.where((a) => !a.done)) {
+      final alarmAt = _nextAlarmTime(appointment, now);
+      if (alarmAt != null) due.add((appointment, alarmAt, true));
 
-    for (final appointment in due.take(AppConfig.maxScheduledReminders)) {
-      await _schedule(appointment, mode);
+      final fireAt = _nextFireTime(appointment, now);
+      // تذكير وقته عدّى وما بيتكررش مبينفعش يتجدول. الميعاد نفسه ممكن يكون
+      // لسه جاي (لو اتسجّل قبله بشوية) وده مقبول — بتفضل صفّارة وقته.
+      // ولو التذكير المسبق أصلًا على وقت الموعد نفسه (remind_before = 0)
+      // مايتكررش مرتين — الصفّارة أقوى وبتكفي.
+      if (fireAt != null && fireAt != alarmAt) {
+        due.add((appointment, fireAt, false));
+      }
+    }
+    due.sort((a, b) => a.$2.compareTo(b.$2));
+
+    for (final (appointment, fireAt, isSiren) in due.take(
+      AppConfig.maxScheduledReminders,
+    )) {
+      await _schedule(appointment, fireAt, mode, siren: isSiren);
     }
 
     if (due.length > AppConfig.maxScheduledReminders) {
       debugPrint(
-        'اتجدول ${AppConfig.maxScheduledReminders} من ${due.length} تذكير — '
+        'اتجدول ${AppConfig.maxScheduledReminders} من ${due.length} تنبيه — '
         'الباقي هيتجدول لما الأقرب يعدّي.',
       );
     }
@@ -280,10 +314,72 @@ class ReminderScheduler {
     }
   }
 
+  /// وقت الرنّة الجاية، أو null لو مافيش حاجة تتجدول.
+  ///
+  /// المتكرر اللي مرّته الأولى عدّت بيتدحرج للمرة الجاية بدل ما يتفلتر:
+  /// قبل التصليح ده «كل أحد الساعة ٩» كان بيرنّ أول أحد بس — أول ما
+  /// التطبيق يتفتح بعدها، rescheduleAll تلغي كل حاجة وتفلتر المتكرر
+  /// لأن وقته الأصلي بقى في الماضي، فيموت في صمت.
+  DateTime? _nextFireTime(Appointment appointment, DateTime now) {
+    final remindAt = appointment.remindAt;
+    if (remindAt.isAfter(now)) return remindAt;
+    if (appointment.repeat == Repeat.none) return null;
+
+    // تأجيل عدّى وقته خلص مفعوله — نرجع لوقت التذكير الأساسي وندحرجه.
+    return _rollForward(
+      appointment.at.subtract(
+        Duration(minutes: appointment.remindBeforeMinutes),
+      ),
+      appointment.repeat,
+      now,
+    );
+  }
+
+  /// وقت صفّارة الإنذار الجاية — وقت الموعد **نفسه**، مدحرج للمرة الجاية
+  /// لو الموعد متكرر ومرّته عدّت.
+  DateTime? _nextAlarmTime(Appointment appointment, DateTime now) {
+    if (appointment.at.isAfter(now)) return appointment.at;
+    if (appointment.repeat == Repeat.none) return null;
+    return _rollForward(appointment.at, appointment.repeat, now);
+  }
+
+  DateTime? _rollForward(DateTime start, Repeat repeat, DateTime now) {
+    var base = start;
+    // بحد أقصى معقول عشان بيانات بايظة (تاريخ قديم بسنين يوميًا = آلاف
+    // اللفّات) ما تعلّقش فتح التطبيق.
+    for (var i = 0; i < 4000 && !base.isAfter(now); i++) {
+      base = switch (repeat) {
+        Repeat.daily => base.add(const Duration(days: 1)),
+        Repeat.weekly => base.add(const Duration(days: 7)),
+        Repeat.monthly => DateTime(
+          base.year,
+          base.month + 1,
+          base.day,
+          base.hour,
+          base.minute,
+        ),
+        Repeat.yearly => DateTime(
+          base.year + 1,
+          base.month,
+          base.day,
+          base.hour,
+          base.minute,
+        ),
+        Repeat.none => base,
+      };
+    }
+    return base.isAfter(now) ? base : null;
+  }
+
   Future<void> _schedule(
-    Appointment appointment, [
-    AndroidScheduleMode mode = AndroidScheduleMode.exactAllowWhileIdle,
-  ]) => _withFallback(mode, (m) => _scheduleWith(appointment, m));
+    Appointment appointment,
+    DateTime fireAt,
+    AndroidScheduleMode mode, {
+    bool siren = false,
+  }) => _withFallback(
+    mode,
+    (m) => _scheduleWith(appointment, fireAt, m, siren: siren),
+  );
 
   /// يجدول ويتصرف في رفض «الجدولة الدقيقة» بدل ما يرمي.
   ///
@@ -311,59 +407,104 @@ class ReminderScheduler {
     }
   }
 
-  Future<void> _scheduleWith(
-    Appointment appointment,
-    AndroidScheduleMode mode,
-  ) async {
-    await _plugin.zonedSchedule(
-      id: _notificationId(appointment.id),
-      title: appointment.title,
-      body: _body(appointment),
-      scheduledDate: tz.TZDateTime.from(appointment.remindAt, tz.local),
-      payload: appointment.id,
-      androidScheduleMode: mode,
-      matchDateTimeComponents: _repeatComponent(appointment.repeat),
-      notificationDetails: const NotificationDetails(
-        android: AndroidNotificationDetails(
-          AppConfig.reminderChannelId,
-          AppConfig.reminderChannelName,
-          channelDescription: AppConfig.reminderChannelDescription,
-          importance: Importance.max,
-          priority: Priority.high,
-          // فئة منبّه + ملء الشاشة + صوت المنبّه: التذكير يبان ويرنّ زي
-          // منبّه حقيقي حتى والشاشة مقفولة أو الجوال صامت.
-          category: AndroidNotificationCategory.alarm,
-          fullScreenIntent: true,
-          audioAttributesUsage: AudioAttributesUsage.alarm,
-          // «تم» و«أجّل» من الإشعار نفسه — من غير ما يفتح التطبيق.
-          // showsUserInterface بيوصّل الضغطة للتطبيق وهو صاحي، وده أضمن
-          // طريق من معالج الخلفية اللي بيتقتل على أجهزة كتير.
-          actions: [
-            AndroidNotificationAction(
-              actionDone,
-              'تم',
-              showsUserInterface: true,
-            ),
-            AndroidNotificationAction(
-              actionSnooze,
-              'أجّل ربع ساعة',
-              showsUserInterface: true,
-            ),
-          ],
-        ),
-        iOS: DarwinNotificationDetails(
-          presentAlert: true,
-          presentBadge: true,
-          presentSound: true,
-          // بيخلّي الإشعار يعدّي وضع التركيز. مستوى critical (اللي بيعدّي
-          // الصامت) محتاج موافقة خاصة من أبل ومش متاحة لتطبيق زي ده.
-          interruptionLevel: InterruptionLevel.timeSensitive,
-          // الفئة اللي فيها أزرار «تم» و«أجّل» — معرّفة في initialize.
-          categoryIdentifier: 'sekerter_reminder',
-        ),
+  /// أزرار «تم» و«أجّل» من الإشعار نفسه — من غير ما يفتح التطبيق.
+  /// showsUserInterface بيوصّل الضغطة للتطبيق وهو صاحي، وده أضمن
+  /// طريق من معالج الخلفية اللي بيتقتل على أجهزة كتير.
+  static const List<AndroidNotificationAction> _actions = [
+    AndroidNotificationAction(actionDone, 'تم', showsUserInterface: true),
+    AndroidNotificationAction(
+      actionSnooze,
+      'أجّل ربع ساعة',
+      showsUserInterface: true,
+    ),
+  ];
+
+  /// تفاصيل إشعار الصفّارة — أعنف من التذكير المسبق عن قصد: قناة بصوت
+  /// إنذار حقيقي، وFLAG_INSISTENT (القيمة 4) بيخلّي الصوت يفضل شغّال في
+  /// حلقة لحد ما المستخدم يسكّته بنفسه — زي منبّه بجد.
+  AndroidNotificationDetails _sirenDetails() => AndroidNotificationDetails(
+    AppConfig.alarmChannelId,
+    AppConfig.alarmChannelName,
+    channelDescription: AppConfig.alarmChannelDescription,
+    importance: Importance.max,
+    priority: Priority.high,
+    category: AndroidNotificationCategory.alarm,
+    fullScreenIntent: true,
+    sound: const RawResourceAndroidNotificationSound('siren'),
+    audioAttributesUsage: AudioAttributesUsage.alarm,
+    additionalFlags: Int32List.fromList(const [4]),
+    actions: _actions,
+  );
+
+  /// يرنّ الصفّارة **حالًا** — زرار «جرّب الصفّارة» في الإعدادات.
+  ///
+  /// نفس القناة ونفس الصوت ونفس الإلحاح بتاع وقت الموعد بالظبط — فلو رنّت
+  /// هنا يبقى الصوت والأذونات تمام، ولو ما رنّتش المشكلة باينة على طول
+  /// من غير ما المستخدم يستنى موعد حقيقي ويكتشف ساعتها.
+  Future<void> ringSirenNow() async {
+    await _plugin.show(
+      id: _sirenTestId,
+      title: '🚨 تجربة الصفّارة',
+      body: 'كذا بترنّ في وقت الموعد بالظبط. اسحب الإشعار عشان تسكت.',
+      notificationDetails: NotificationDetails(
+        android: _sirenDetails(),
+        iOS: _darwinDetails,
       ),
     );
   }
+
+  static const int _sirenTestId = 1899999999;
+
+  Future<void> _scheduleWith(
+    Appointment appointment,
+    DateTime fireAt,
+    AndroidScheduleMode mode, {
+    bool siren = false,
+  }) async {
+    final android = siren
+        ? _sirenDetails()
+        : const AndroidNotificationDetails(
+            AppConfig.reminderChannelId,
+            AppConfig.reminderChannelName,
+            channelDescription: AppConfig.reminderChannelDescription,
+            importance: Importance.max,
+            priority: Priority.high,
+            // فئة منبّه + ملء الشاشة + صوت المنبّه: التذكير يبان ويرنّ زي
+            // منبّه حقيقي حتى والشاشة مقفولة أو الجوال صامت.
+            category: AndroidNotificationCategory.alarm,
+            fullScreenIntent: true,
+            audioAttributesUsage: AudioAttributesUsage.alarm,
+            actions: _actions,
+          );
+
+    await _plugin.zonedSchedule(
+      id: siren
+          ? _alarmNotificationId(appointment.id)
+          : _notificationId(appointment.id),
+      title: siren ? '🚨 ${appointment.title}' : appointment.title,
+      body: siren ? 'وقت موعدك الحين!' : _body(appointment),
+      scheduledDate: tz.TZDateTime.from(fireAt, tz.local),
+      payload: appointment.id,
+      androidScheduleMode: mode,
+      matchDateTimeComponents: _repeatComponent(appointment.repeat),
+      notificationDetails: NotificationDetails(
+        android: android,
+        iOS: _darwinDetails,
+      ),
+    );
+  }
+
+  static const DarwinNotificationDetails _darwinDetails =
+      DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+        // بيخلّي الإشعار يعدّي وضع التركيز. مستوى critical (اللي بيعدّي
+        // الصامت) محتاج موافقة خاصة من أبل ومش متاحة لتطبيق زي ده.
+        interruptionLevel: InterruptionLevel.timeSensitive,
+        // الفئة اللي فيها أزرار «تم» و«أجّل» — معرّفة في initialize.
+        categoryIdentifier: 'sekerter_reminder',
+      );
 
   String _body(Appointment appointment) {
     final minutes = appointment.remindBeforeMinutes;
@@ -392,10 +533,16 @@ class ReminderScheduler {
     Repeat.yearly => DateTimeComponents.dateAndTime,
   };
 
-  /// الـid عندنا نص والـAPI عايز int موجب في 32 بت.
+  /// الـid عندنا نص والـAPI عايز int موجب في 32 بت — محصور في نطاق
+  /// التذكيرات (شوف تعليق النطاقات فوق).
   int _notificationId(String appointmentId) =>
-      appointmentId.hashCode & 0x7fffffff;
+      (appointmentId.hashCode & 0x7fffffff) % _idSpan;
 
-  Future<void> cancel(String appointmentId) =>
-      _plugin.cancel(id: _notificationId(appointmentId));
+  int _alarmNotificationId(String appointmentId) =>
+      _alarmIdBase + (appointmentId.hashCode & 0x7fffffff) % _idSpan;
+
+  Future<void> cancel(String appointmentId) async {
+    await _plugin.cancel(id: _notificationId(appointmentId));
+    await _plugin.cancel(id: _alarmNotificationId(appointmentId));
+  }
 }
