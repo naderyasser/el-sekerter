@@ -47,6 +47,7 @@ import 'package:sekerter/state/providers.dart';
 /// بيسجّل نداءات الجدولة بدل ما يكلّم نظام التشغيل.
 class RecordingPlugin implements FlutterLocalNotificationsPlugin {
   final List<Invocation> scheduled = [];
+  final List<Invocation> shown = [];
   final List<int> cancelled = [];
   int cancelAllCount = 0;
 
@@ -55,6 +56,9 @@ class RecordingPlugin implements FlutterLocalNotificationsPlugin {
     switch (invocation.memberName) {
       case #zonedSchedule:
         scheduled.add(invocation);
+        return Future<void>.value();
+      case #show:
+        shown.add(invocation);
         return Future<void>.value();
       case #cancel:
         cancelled.add(invocation.namedArguments[#id] as int);
@@ -1239,6 +1243,26 @@ void main() {
         when.isAtSameMomentAs(weekly.at.add(const Duration(days: 7))),
         isTrue,
       );
+    });
+
+    test('«جرّبها الحين» بترنّ نفس الصفّارة فورًا — مش نسخة مخففة', () async {
+      // زرار التجربة في الإعدادات لازم يطلع بنفس القناة ونفس الصوت ونفس
+      // الإلحاح بتاع وقت الموعد — عشان نجاحه يبقى دليل حقيقي.
+      final plugin = RecordingPlugin();
+
+      await ReminderScheduler(plugin).ringSirenNow();
+
+      expect(plugin.shown, hasLength(1));
+      final details =
+          plugin.shown.single.namedArguments[#notificationDetails]
+              as NotificationDetails;
+      final android = details.android!;
+      expect(android.channelId, AppConfig.alarmChannelId);
+      expect(
+        (android.sound as RawResourceAndroidNotificationSound).sound,
+        'siren',
+      );
+      expect(android.additionalFlags, contains(4));
     });
 
     test('إلغاء الموعد بيلغي التذكير والصفّارة مع بعض', () async {

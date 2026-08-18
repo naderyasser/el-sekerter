@@ -1,7 +1,7 @@
 name: sekerter
 description: "السكرتير الخاص — شات بوت بيمسك مواعيدك ويفكّرك بيها."
 publish_to: 'none'
-version: 0.1.0+1
+version: 0.2.0+1
 
 environment:
   sdk: ^3.13.0
@@ -37,6 +37,9 @@ dependencies:
   flutter_contacts: ^2.3.1
   url_launcher: ^6.3.2
   android_intent_plus: ^6.1.0
+
+  # عرض رقم النسخة في الإعدادات — عشان نعرف المستخدم على أنهي بيلد
+  package_info_plus: ^10.2.1
 
 dev_dependencies:
   flutter_test:
