@@ -40,5 +40,16 @@ if ! adb shell dumpsys window windows 2>/dev/null | grep -q "com.elsekerter.seke
   exit 1
 fi
 
+# التصغير (R8) بيشيل كود الإضافات اللي بتتنده عبر method channels لو مفيش
+# keep rules — فالنداء يفشل بـMissingPluginException. أول ما التطبيق يفتح
+# بيطلب إذن الإشعارات (permission_handler + flutter_local_notifications)،
+# فلو الإضافات متشالة الخطأ بيبان في اللوج على طول. ده بيمسك الرجوع
+# لنسخة release مكسورة قبل ما توصل لأي مستخدم.
+if adb logcat -d | grep -qE "MissingPluginException|No implementation found for method"; then
+  echo "::error::إضافة native مش موجودة في نسخة release — غالبًا التصغير شالها"
+  adb logcat -d | grep -B2 -A8 -E "MissingPluginException|No implementation found" | tail -40 || true
+  exit 1
+fi
+
 adb exec-out screencap -p > release-boot.png
 echo "النسخة النهائية فتحت وعايشة (pid=$pid) ✅"

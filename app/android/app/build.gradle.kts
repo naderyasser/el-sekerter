@@ -64,6 +64,15 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
+            // التصغير مطفّي عن قصد. R8 كان بيشوّه ويشيل كود الإضافات اللي
+            // بتتنده عبر method channels (permission_handler, url_launcher,
+            // android_intent_plus, speech_to_text) من غير keep rules —
+            // فالأذونات والاتصال والواتساب والصوت كلهم كانوا بيفشلوا في
+            // صمت في نسخة release. التطبيق يتوزّع يدوي (مش على المتجر)
+            // فمفيش داعي أصلًا للتصغير، والحجم الأكبر شوية مقبول تمامًا.
+            // ده كمان بيمنع شيل أيقونة الإشعار اللي كانت بتوقّع الإقلاع.
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }
