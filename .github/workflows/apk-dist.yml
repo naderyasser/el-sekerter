@@ -108,11 +108,52 @@ jobs:
             --build-number=$(git rev-list --count HEAD) \
             --dart-define=API_BASE_URL=https://el-sekerter.meena-alaqariya.com
 
+      - name: تفعيل KVM للمحاكي
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: تدخين النسخة النهائية على أندرويد حقيقي
+        # كل الاختبارات التانية بتشتغل على نسخة debug — دي بتثبّت **نفس
+        # الملف اللي هيتنشر** (release مضغوطة وبالتوقيع الحقيقي) على محاكي،
+        # وتشغّلها، وتتأكد إنها عايشة من غير أي انهيار، وتاخد لها صورة.
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 32
+          arch: x86_64
+          target: google_apis
+          profile: pixel_5
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
+          working-directory: app
+          script: |
+            adb install -r build/app/outputs/flutter-apk/app-release.apk
+            adb logcat -c
+            adb shell am start -n com.elsekerter.sekerter/.MainActivity
+            sleep 25
+            pid=$(adb shell pidof com.elsekerter.sekerter || true)
+            if [ -z "$pid" ]; then
+              echo "::error::النسخة النهائية وقعت عند الإقلاع — مش هتتنشر"
+              adb logcat -d | grep -iE "FATAL|AndroidRuntime" | tail -50
+              exit 1
+            fi
+            if adb logcat -d | grep -q "FATAL EXCEPTION"; then
+              echo "::error::انهيار في اللوج رغم إن العملية عايشة"
+              adb logcat -d | grep -A25 "FATAL EXCEPTION" | tail -60
+              exit 1
+            fi
+            adb exec-out screencap -p > release-boot.png
+            echo "النسخة النهائية فتحت وعايشة (pid=$pid) ✅"
+
       - name: تجهيز dist
         run: |
           set -euo pipefail
           mkdir -p dist
           cp app/build/app/outputs/flutter-apk/app-release.apk dist/sekerter.apk
+          # صورة أول إقلاع للنسخة دي نفسها على أندرويد — دليل مرئي إنها شغالة.
+          cp app/release-boot.png dist/screenshot.png
           ( cd dist && sha256sum sekerter.apk > sekerter.apk.sha256 )
 
           sha=$(cut -d' ' -f1 dist/sekerter.apk.sha256)
@@ -141,6 +182,10 @@ jobs:
           2. لو ظهرت رسالة «مصادر غير معروفة»، اسمح للمتصفح أو لتطبيق الملفات
              بتثبيت التطبيقات، وبعدين كمّل.
           3. افتح التطبيق — هيكون موصول على السيرفر على طول.
+
+          ## صورة النسخة دي وهي شغالة
+
+          \![أول إقلاع على أندرويد](screenshot.png)
 
           ## التحقق من الملف
 
