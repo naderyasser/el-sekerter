@@ -87,7 +87,17 @@ jobs:
             echo "::error::Settings → Secrets and variables → Actions → New repository secret"
             exit 1
           fi
-          echo "$KEYSTORE_B64" | base64 -d > app/android/app/sekerter-release.jks
+          # ‎-di بيتجاهل أي حروف مش من أبجدية base64 — اللصق من ويندوز
+          # بيدخّل \r وبيوقّع الفك الصارم بـ"invalid input" (حصل فعلًا).
+          printf '%s' "$KEYSTORE_B64" | base64 -di > app/android/app/sekerter-release.jks
+          # تحقق إن الناتج مفتاح صالح فعلًا — لو اللصق كان ناقص نفشل
+          # برسالة واضحة بدل ما نوقّع في وسط البناء.
+          if ! keytool -list -keystore app/android/app/sekerter-release.jks \
+              -storepass sekerter2026 -alias sekerter >/dev/null 2>&1; then
+            echo "::error::محتوى السر مش مفتاح صالح — غالبًا النسخ كان ناقص."
+            echo "::error::احذف السر وأعد إضافته: افتح ANDROID_KEYSTORE_B64.txt وانسخ محتواه كاملًا (Ctrl+A ثم Ctrl+C) والصقه."
+            exit 1
+          fi
 
       - name: بناء APK
         working-directory: app
