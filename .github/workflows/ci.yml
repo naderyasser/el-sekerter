@@ -69,9 +69,14 @@ jobs:
             echo "::error::السر ANDROID_KEYSTORE_B64 مش متظبط (Settings → Secrets → Actions)."
             exit 1
           fi
-          # ‎-di بيتجاهل أي حروف مش من أبجدية base64 — اللصق من ويندوز
-          # بيدخّل \r وبيوقّع الفك الصارم بـ"invalid input" (حصل فعلًا).
-          printf '%s' "$KEYSTORE_B64" | base64 -di > app/android/app/sekerter-release.jks
+          # تشخيص آمن (مايكشفش السر): الطول وعدد الحروف الصالحة —
+          # المفتاح الكامل ~2855 حرف base64. لو أقل بكتير يبقى اللصق ناقص.
+          len=${#KEYSTORE_B64}
+          valid=$(printf '%s' "$KEYSTORE_B64" | tr -cd 'A-Za-z0-9+/=' | wc -c)
+          echo "طول السر: $len حرف — منها صالح كـbase64: $valid (المتوقع ~2855)"
+          # ‎-di بيتجاهل أي حروف مش من أبجدية base64 (مسافات، \r، أسطر).
+          printf '%s' "$KEYSTORE_B64" | tr -cd 'A-Za-z0-9+/=' \
+            | base64 -d > app/android/app/sekerter-release.jks
           # تحقق إن الناتج مفتاح صالح فعلًا — لو اللصق كان ناقص نفشل
           # برسالة واضحة بدل ما نوقّع في وسط البناء.
           if ! keytool -list -keystore app/android/app/sekerter-release.jks \
