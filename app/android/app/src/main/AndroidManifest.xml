@@ -26,6 +26,10 @@
     <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
     <!-- التذكير يبان زي منبّه حقيقي حتى والشاشة مقفولة. -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
+    <!-- استثناء من توفير البطارية: أجهزة كتير (شاومي/أوبو/ريلمي خصوصًا)
+         بتقتل المنبّهات المجدولة لتوفير الطاقة — فالصفّارة ما ترنّش رغم إن
+         كل الأذونات متاحة. الإذن ده بيطلّع حوار «اسمح» للمستخدم. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
 
     <application
         android:label="السكرتير"

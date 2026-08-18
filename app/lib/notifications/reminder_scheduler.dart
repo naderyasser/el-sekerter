@@ -419,29 +419,50 @@ class ReminderScheduler {
     ),
   ];
 
+  /// تفاصيل إشعار الصفّارة — أعنف من التذكير المسبق عن قصد: قناة بصوت
+  /// إنذار حقيقي، وFLAG_INSISTENT (القيمة 4) بيخلّي الصوت يفضل شغّال في
+  /// حلقة لحد ما المستخدم يسكّته بنفسه — زي منبّه بجد.
+  AndroidNotificationDetails _sirenDetails() => AndroidNotificationDetails(
+    AppConfig.alarmChannelId,
+    AppConfig.alarmChannelName,
+    channelDescription: AppConfig.alarmChannelDescription,
+    importance: Importance.max,
+    priority: Priority.high,
+    category: AndroidNotificationCategory.alarm,
+    fullScreenIntent: true,
+    sound: const RawResourceAndroidNotificationSound('siren'),
+    audioAttributesUsage: AudioAttributesUsage.alarm,
+    additionalFlags: Int32List.fromList(const [4]),
+    actions: _actions,
+  );
+
+  /// يرنّ الصفّارة **حالًا** — زرار «جرّب الصفّارة» في الإعدادات.
+  ///
+  /// نفس القناة ونفس الصوت ونفس الإلحاح بتاع وقت الموعد بالظبط — فلو رنّت
+  /// هنا يبقى الصوت والأذونات تمام، ولو ما رنّتش المشكلة باينة على طول
+  /// من غير ما المستخدم يستنى موعد حقيقي ويكتشف ساعتها.
+  Future<void> ringSirenNow() async {
+    await _plugin.show(
+      id: _sirenTestId,
+      title: '🚨 تجربة الصفّارة',
+      body: 'كذا بترنّ في وقت الموعد بالظبط. اسحب الإشعار عشان تسكت.',
+      notificationDetails: NotificationDetails(
+        android: _sirenDetails(),
+        iOS: _darwinDetails,
+      ),
+    );
+  }
+
+  static const int _sirenTestId = 1899999999;
+
   Future<void> _scheduleWith(
     Appointment appointment,
     DateTime fireAt,
     AndroidScheduleMode mode, {
     bool siren = false,
   }) async {
-    // إشعار الصفّارة (وقت الموعد نفسه) أعنف من التذكير المسبق عن قصد:
-    // قناة بصوت إنذار حقيقي، وFLAG_INSISTENT (القيمة 4) بيخلّي الصوت
-    // يفضل شغّال في حلقة لحد ما المستخدم يسكّته بنفسه — زي منبّه بجد.
     final android = siren
-        ? AndroidNotificationDetails(
-            AppConfig.alarmChannelId,
-            AppConfig.alarmChannelName,
-            channelDescription: AppConfig.alarmChannelDescription,
-            importance: Importance.max,
-            priority: Priority.high,
-            category: AndroidNotificationCategory.alarm,
-            fullScreenIntent: true,
-            sound: const RawResourceAndroidNotificationSound('siren'),
-            audioAttributesUsage: AudioAttributesUsage.alarm,
-            additionalFlags: Int32List.fromList(const [4]),
-            actions: _actions,
-          )
+        ? _sirenDetails()
         : const AndroidNotificationDetails(
             AppConfig.reminderChannelId,
             AppConfig.reminderChannelName,
@@ -468,19 +489,22 @@ class ReminderScheduler {
       matchDateTimeComponents: _repeatComponent(appointment.repeat),
       notificationDetails: NotificationDetails(
         android: android,
-        iOS: const DarwinNotificationDetails(
-          presentAlert: true,
-          presentBadge: true,
-          presentSound: true,
-          // بيخلّي الإشعار يعدّي وضع التركيز. مستوى critical (اللي بيعدّي
-          // الصامت) محتاج موافقة خاصة من أبل ومش متاحة لتطبيق زي ده.
-          interruptionLevel: InterruptionLevel.timeSensitive,
-          // الفئة اللي فيها أزرار «تم» و«أجّل» — معرّفة في initialize.
-          categoryIdentifier: 'sekerter_reminder',
-        ),
+        iOS: _darwinDetails,
       ),
     );
   }
+
+  static const DarwinNotificationDetails _darwinDetails =
+      DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+        // بيخلّي الإشعار يعدّي وضع التركيز. مستوى critical (اللي بيعدّي
+        // الصامت) محتاج موافقة خاصة من أبل ومش متاحة لتطبيق زي ده.
+        interruptionLevel: InterruptionLevel.timeSensitive,
+        // الفئة اللي فيها أزرار «تم» و«أجّل» — معرّفة في initialize.
+        categoryIdentifier: 'sekerter_reminder',
+      );
 
   String _body(Appointment appointment) {
     final minutes = appointment.remindBeforeMinutes;
