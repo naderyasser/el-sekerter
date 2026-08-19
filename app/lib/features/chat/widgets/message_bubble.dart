@@ -79,9 +79,8 @@ class MessageBubble extends StatelessWidget {
                 ? _FailedRow(onRetry: onRetry)
                 : Text(
                     ArabicDate.time(message.at),
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
+                    style: Theme.of(context).textTheme.labelSmall
+                        ?.copyWith(color: scheme.onSurfaceVariant),
                   ),
           ),
       ],

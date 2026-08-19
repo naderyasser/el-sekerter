@@ -116,7 +116,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           return bubble;
                         }
                         return Column(
-                          children: [_DaySeparator(at: message.at), bubble],
+                          children: [
+                            _DaySeparator(at: message.at),
+                            bubble,
+                          ],
                         );
                       },
                     ),
