@@ -17,11 +17,18 @@ class Composer extends ConsumerStatefulWidget {
   ConsumerState<Composer> createState() => _ComposerState();
 }
 
-class _ComposerState extends ConsumerState<Composer> {
+class _ComposerState extends ConsumerState<Composer>
+    with SingleTickerProviderStateMixin {
   final _controller = TextEditingController();
   final _focus = FocusNode();
 
   bool _listening = false;
+
+  /// نبضة زرار المايك وهو بيسمع — إشارة مرئية إن الجهاز فعلًا بيسجّل.
+  late final AnimationController _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 700),
+  );
 
   /// النص اللي كان مكتوب قبل ما الاستماع يبدأ. نتيجة الصوت بتتزاد عليه بدل
   /// ما تمسحه.
@@ -29,9 +36,21 @@ class _ComposerState extends ConsumerState<Composer> {
 
   @override
   void dispose() {
+    _pulse.dispose();
     _controller.dispose();
     _focus.dispose();
     super.dispose();
+  }
+
+  void _setListening(bool value) {
+    if (!mounted) return;
+    setState(() => _listening = value);
+    if (value) {
+      _pulse.repeat(reverse: true);
+    } else {
+      _pulse.stop();
+      _pulse.value = 0;
+    }
   }
 
   void _send() {
@@ -47,7 +66,7 @@ class _ComposerState extends ConsumerState<Composer> {
 
     if (_listening) {
       await speech.stop();
-      setState(() => _listening = false);
+      _setListening(false);
       return;
     }
 
@@ -55,7 +74,7 @@ class _ComposerState extends ConsumerState<Composer> {
     // نهائية — الإشارات دي هي اللي بترجّع زرار المايك لحالته بدل ما يفضل
     // شكله «بيسمع» وهو واقف.
     speech.onStopped = () {
-      if (mounted && _listening) setState(() => _listening = false);
+      if (mounted && _listening) _setListening(false);
     };
     speech.onProblem = (message) {
       if (!mounted) return;
@@ -78,7 +97,7 @@ class _ComposerState extends ConsumerState<Composer> {
     }
 
     _textBeforeListening = _controller.text;
-    setState(() => _listening = true);
+    _setListening(true);
 
     await speech.start(
       onResult: (text, isFinal) {
@@ -91,7 +110,36 @@ class _ComposerState extends ConsumerState<Composer> {
           ..selection = TextSelection.collapsed(
             offset: _controller.text.length,
           );
-        if (isFinal) setState(() => _listening = false);
+        if (isFinal) _setListening(false);
+      },
+    );
+  }
+
+  Widget _micButton(ColorScheme scheme) {
+    if (!_listening) {
+      return IconButton(
+        tooltip: 'تكلّم',
+        onPressed: widget.enabled ? _toggleMic : null,
+        icon: Icon(Icons.mic_none, color: scheme.primary),
+      );
+    }
+    return AnimatedBuilder(
+      animation: _pulse,
+      builder: (context, _) {
+        final t = Curves.easeInOut.transform(_pulse.value);
+        return IconButton(
+          tooltip: 'إيقاف',
+          onPressed: _toggleMic,
+          style: IconButton.styleFrom(
+            backgroundColor: scheme.errorContainer.withValues(
+              alpha: 0.45 + 0.55 * t,
+            ),
+          ),
+          icon: Transform.scale(
+            scale: 1 + 0.12 * t,
+            child: Icon(Icons.mic, color: scheme.error),
+          ),
+        );
       },
     );
   }
@@ -118,14 +166,7 @@ class _ComposerState extends ConsumerState<Composer> {
                 onSubmitted: (_) => _send(),
                 decoration: InputDecoration(
                   hintText: _listening ? 'أسمعك…' : 'اكتب أو تكلّم…',
-                  suffixIcon: IconButton(
-                    tooltip: _listening ? 'إيقاف' : 'تكلّم',
-                    onPressed: widget.enabled ? _toggleMic : null,
-                    icon: Icon(
-                      _listening ? Icons.stop_circle : Icons.mic_none,
-                      color: _listening ? scheme.error : scheme.primary,
-                    ),
-                  ),
+                  suffixIcon: _micButton(scheme),
                 ),
               ),
             ),
@@ -134,10 +175,15 @@ class _ComposerState extends ConsumerState<Composer> {
               valueListenable: _controller,
               builder: (context, value, _) {
                 final canSend = widget.enabled && value.text.trim().isNotEmpty;
-                return IconButton.filled(
-                  onPressed: canSend ? _send : null,
-                  icon: const Icon(Icons.arrow_upward),
-                  tooltip: 'إرسال',
+                return AnimatedScale(
+                  scale: canSend ? 1 : 0.88,
+                  duration: const Duration(milliseconds: 150),
+                  curve: Curves.easeOut,
+                  child: IconButton.filled(
+                    onPressed: canSend ? _send : null,
+                    icon: const Icon(Icons.arrow_upward),
+                    tooltip: 'إرسال',
+                  ),
                 );
               },
             ),
