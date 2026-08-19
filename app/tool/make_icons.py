@@ -1,7 +1,20 @@
-"""يولّد أيقونات التطبيق: ساعة على شكل فقاعة كلام — «سكرتير بيتكلم وبيمسك المواعيد».
+"""يولّد كل أصول هوية التطبيق من رسمة واحدة: ساعة على شكل فقاعة كلام —
+«سكرتير بيتكلم وبيمسك المواعيد».
+
+    python3 tool/make_icons.py
+
+بيكتب:
+- assets/logo/{icon,icon_background,icon_foreground,logo}.png — أصول
+  flutter_launcher_icons (dart run flutter_launcher_icons بيطلّع نفس الناتج)
+- android res: أيقونات المشغّل القديمة والتكيفية + ic_stat_sekerter
+  (أيقونة الإشعار — أبيض على شفاف) + splash_logo لشاشة الفتح
+- iOS: كل مقاسات AppIcon
 
 العقارب والعلامات مقطوعة من الجسم الأبيض (شفافة) عشان نفس الرسمة تشتغل
-foreground و monochrome في أيقونة أندرويد التكيفية.
+foreground و monochrome في الأيقونة التكيفية، وأيقونة إشعار سليمة
+(أندرويد بياخد قناة الشفافية بس).
+
+مش محتاج غير Pillow: pip install pillow
 """
 
 import math
@@ -12,7 +25,7 @@ from PIL import Image, ImageDraw
 APP = Path(__file__).resolve().parents[1]
 RES = APP / "android/app/src/main/res"
 IOS = APP / "ios/Runner/Assets.xcassets/AppIcon.appiconset"
-OUT = Path(__file__).parent
+LOGO = APP / "assets/logo"
 
 TOP = (31, 138, 104)     # 0x1F8A68 — أفتح من الـ seed شوية
 BOTTOM = (13, 70, 53)    # 0x0D4635 — أغمق منه
@@ -72,6 +85,16 @@ def gradient(size: int) -> Image.Image:
     return Image.composite(bottom, top, g)
 
 
+def white_mark(size: int, mark: Image.Image, scale: float) -> Image.Image:
+    """العلامة البيضا لوحدها على شفاف، بحجم نسبي من الكانفس."""
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    ms = int(size * scale)
+    mm = mark.resize((ms, ms), Image.LANCZOS)
+    white = Image.new("RGBA", (ms, ms), (255, 255, 255, 255))
+    img.paste(white, ((size - ms) // 2, (size - ms) // 2), mm)
+    return img
+
+
 def compose_icon(size: int, mark: Image.Image, *, corner: float, mark_scale: float) -> Image.Image:
     """خلفية متدرجة + العلامة البيضا، بزوايا مدوّرة اختياريًا (corner كنسبة)."""
     big = max(size * 4, 512)  # نرسم أكبر وننزّل عشان النعومة
@@ -80,8 +103,7 @@ def compose_icon(size: int, mark: Image.Image, *, corner: float, mark_scale: flo
     ms = int(big * mark_scale)
     mm = mark.resize((ms, ms), Image.LANCZOS)
     white = Image.new("RGBA", (ms, ms), (255, 255, 255, 255))
-    pos = ((big - ms) // 2, (big - ms) // 2)
-    icon.paste(white, pos, mm)
+    icon.paste(white, ((big - ms) // 2, (big - ms) // 2), mm)
 
     if corner > 0:
         shape = Image.new("L", (big, big), 0)
@@ -93,31 +115,33 @@ def compose_icon(size: int, mark: Image.Image, *, corner: float, mark_scale: flo
     return icon.resize((size, size), Image.LANCZOS)
 
 
-def foreground(size: int, mark: Image.Image) -> Image.Image:
-    """طبقة foreground التكيفية: العلامة البيضا بس، جوّه المنطقة الآمنة."""
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    ms = int(size * 0.56)
-    mm = mark.resize((ms, ms), Image.LANCZOS)
-    white = Image.new("RGBA", (ms, ms), (255, 255, 255, 255))
-    img.paste(white, ((size - ms) // 2, (size - ms) // 2), mm)
-    return img
-
-
 def main() -> None:
     mark = mark_mask()
 
-    # أندرويد — الأيقونة القديمة (قبل 8.0): مربع بزوايا مدوّرة
-    legacy = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
-    for dpi, px in legacy.items():
-        compose_icon(px, mark, corner=0.20, mark_scale=0.74).save(
+    # أصول flutter_launcher_icons — نفس اللي بيتولد منها كل حاجة تانية
+    LOGO.mkdir(parents=True, exist_ok=True)
+    compose_icon(1024, mark, corner=0.20, mark_scale=0.74).save(LOGO / "icon.png")
+    gradient(1024).save(LOGO / "icon_background.png")
+    white_mark(1024, mark, 0.56).save(LOGO / "icon_foreground.png")
+    # اللوجو اللي بيتعرض جوّه التطبيق (الإعدادات وغيرها)
+    compose_icon(512, mark, corner=0.20, mark_scale=0.74).save(LOGO / "logo.png")
+
+    dpis = {"mdpi": 1, "hdpi": 1.5, "xhdpi": 2, "xxhdpi": 3, "xxxhdpi": 4}
+    for dpi, k in dpis.items():
+        # الأيقونة القديمة (قبل أندرويد 8): مربع بزوايا مدوّرة — 48dp
+        compose_icon(int(48 * k), mark, corner=0.20, mark_scale=0.74).save(
             RES / f"mipmap-{dpi}" / "ic_launcher.png"
         )
+        # طبقات الأيقونة التكيفية (8.0+) — 108dp، والعلامة جوّه المنطقة
+        # الآمنة (66dp) عشان أي قناع دايرة/مربع ما يقصّهاش
+        px = int(108 * k)
+        gradient(px).save(RES / f"drawable-{dpi}" / "ic_launcher_background.png")
+        white_mark(px, mark, 0.56).save(RES / f"drawable-{dpi}" / "ic_launcher_foreground.png")
+        # أيقونة شريط الإشعارات — 24dp، أندرويد بيستخدم الشفافية بس
+        white_mark(int(24 * k), mark, 0.94).save(RES / f"drawable-{dpi}" / "ic_stat_sekerter.png")
 
-    # أندرويد — التكيفية (8.0+): خلفية وforeground منفصلين
-    adaptive = {"mdpi": 108, "hdpi": 162, "xhdpi": 216, "xxhdpi": 324, "xxxhdpi": 432}
-    for dpi, px in adaptive.items():
-        gradient(px).save(RES / f"mipmap-{dpi}" / "ic_launcher_background.png")
-        foreground(px, mark).save(RES / f"mipmap-{dpi}" / "ic_launcher_foreground.png")
+    # لوجو شاشة الفتح: العلامة البيضا على خلفية splash_background الخضرا
+    white_mark(512, mark, 0.80).save(RES / "drawable-nodpi" / "splash_logo.png")
 
     # iOS — مربع كامل من غير تدوير ولا شفافية (النظام بيدوّر بنفسه)
     ios_sizes = {
@@ -131,9 +155,6 @@ def main() -> None:
     for name, px in ios_sizes.items():
         compose_icon(px, mark, corner=0.0, mark_scale=0.74).convert("RGB").save(IOS / name)
 
-    # معاينة كبيرة للمراجعة
-    compose_icon(512, mark, corner=0.20, mark_scale=0.74).save(OUT / "icon_preview.png")
-    foreground(512, mark).save(OUT / "fg_preview.png")
     print("done")
 
 
