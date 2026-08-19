@@ -66,14 +66,16 @@ class _ComposerState extends ConsumerState<Composer> {
 
     if (!await speech.initialize()) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'ما قدرت أشغّل المايك. تأكد إن إذن المايك مسموح والتعرّف على '
-            'الكلام مفعّل بجهازك.',
+      // الرسالة بتفرّق بين «الإذن مقفول» و«الجهاز مافيهوش محرّك» — الاتنين
+      // ليهم حل مختلف تمامًا، ورسالة واحدة عامة كانت بتسيب المستخدم واقف.
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(speech.lastProblem.message),
+            duration: const Duration(seconds: 6),
           ),
-        ),
-      );
+        );
       return;
     }
 

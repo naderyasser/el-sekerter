@@ -1,7 +1,7 @@
 name: sekerter
 description: "السكرتير الخاص — شات بوت بيمسك مواعيدك ويفكّرك بيها."
 publish_to: 'none'
-version: 0.2.0+1
+version: 0.3.0+1
 
 environment:
   sdk: ^3.13.0

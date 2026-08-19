@@ -25,6 +25,7 @@ app/ios/Pods/
 # أدوات
 .DS_Store
 *.log
+.idea/
 
 # أدوات عرض محلية — شاشات مرندرة للمعاينة، مش من كود التطبيق
 app/test/build/

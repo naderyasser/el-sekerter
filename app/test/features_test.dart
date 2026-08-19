@@ -77,14 +77,21 @@ class RecordingPlugin implements FlutterLocalNotificationsPlugin {
 
 /// بيتصرف زي أندرويد ١٢/١٣ لما إذن «الجدولة الدقيقة» مسحوب: أي جدولة دقيقة
 /// بترمي exact_alarms_not_permitted، وغير الدقيقة بتتقبل عادي.
+///
+/// **مرتبة المنبّه (alarmClock) بتترفض هي كمان** — بتستخدم نفس إذن
+/// SCHEDULE_EXACT_ALARM، فلو الإذن مسحوب بتتمنع زيها بالظبط.
 class ExactBlockedPlugin extends RecordingPlugin {
   int exactAttempts = 0;
+
+  static const _blocked = {
+    AndroidScheduleMode.alarmClock,
+    AndroidScheduleMode.exactAllowWhileIdle,
+  };
 
   @override
   dynamic noSuchMethod(Invocation invocation) {
     if (invocation.memberName == #zonedSchedule &&
-        invocation.namedArguments[#androidScheduleMode] ==
-            AndroidScheduleMode.exactAllowWhileIdle) {
+        _blocked.contains(invocation.namedArguments[#androidScheduleMode])) {
       exactAttempts += 1;
       return Future<void>.error(
         PlatformException(code: 'exact_alarms_not_permitted'),
@@ -128,6 +135,10 @@ class FakeSpeechEngine implements SpeechToText {
         return Future<bool>.value(true);
       case #locales:
         return Future<List<LocaleName>>.value(localeList);
+      // لازم bool حقيقي: الخدمة بتفحصه في المسار الدافي (متهيّئة قبل كده)،
+      // ومن غيره بيرجّع null وينفجر بـTypeError مالوش علاقة بالاختبار.
+      case #hasPermission:
+        return Future<bool>.value(true);
       case #isListening:
         return false;
       default:
@@ -713,21 +724,44 @@ void main() {
       await harness.send('سجّل كل المواعيد دي');
 
       expect(await harness.store.all(), hasLength(60));
-      // كل موعد بياخد تنبيهين (تذكير مسبق + صفّارة وقته)، والسقف ٥٠
-      // تنبيه إجمالًا — يعني أقرب ٢٥ موعد كاملين.
-      expect(
-        harness.reminders.length + harness.sirens.length,
-        AppConfig.maxScheduledReminders,
-      );
-      expect(harness.reminders, hasLength(25));
-      expect(harness.sirens, hasLength(25));
-      // الأقرب هو اللي اتجدول، مش عشوائي.
+      // على أندرويد مافيش حد زي بتاع أبل — الستين كلهم بياخدوا تنبيهين.
+      expect(harness.reminders, hasLength(60));
+      expect(harness.sirens, hasLength(60));
       final titles = harness.reminders
           .map((c) => c.namedArguments[#title] as String)
           .toList();
       expect(titles.first, 'موعد 1');
-      expect(titles, isNot(contains('موعد 26')));
+      expect(titles, contains('موعد 60'));
     });
+
+    test(
+      'السقف الآيفوني: أقرب ٢٥ موعد كاملين، والباقي معدود مش مبلوع',
+      () async {
+        final plugin = RecordingPlugin();
+        // نفرض سقف آيفون صراحة — الاختبارات بتتشغل على الجهاز المضيف.
+        final scheduler = ReminderScheduler(plugin, AppConfig.maxScheduledIos);
+        final now = DateTime.now();
+        final appointments = [
+          for (var day = 1; day <= 60; day++)
+            Appointment(
+              id: 'a$day',
+              title: 'موعد $day',
+              at: now.add(Duration(days: day)),
+              remindBeforeMinutes: 60,
+            ),
+        ];
+
+        await scheduler.rescheduleAll(appointments);
+
+        final scheduled = plugin.scheduled
+            .where((c) => (c.namedArguments[#id] as int) < 1900000000)
+            .toList();
+        expect(scheduled, hasLength(AppConfig.maxScheduledIos));
+        // ١٢٠ تنبيه مستحق - ٥٠ اتجدولوا = ٧٠ اتقصوا، ولازم يكونوا **معدودين**
+        // عشان الواجهة تحذّر بدل ما الموعد يضيع في صمت.
+        expect(scheduler.unscheduledCount, 120 - AppConfig.maxScheduledIos);
+      },
+    );
   });
 
   group('شريط تحذير الأذونات', () {
@@ -963,8 +997,50 @@ void main() {
           AndroidScheduleMode.inexactAllowWhileIdle,
         );
       }
-      // اتحاول بالدقيقة الأول فعلًا — يعني الرجوع كان عن رفض حقيقي.
-      expect(plugin.exactAttempts, greaterThanOrEqualTo(2));
+      // اتحاول بالمراتب الأقوى الأول فعلًا — يعني الرجوع كان عن رفض
+      // حقيقي مش تخطّي. تنبيهين × (منبّه + دقيق) = ٤ محاولات مرفوضة.
+      expect(plugin.exactAttempts, greaterThanOrEqualTo(4));
+    });
+
+    test('المواعيد بتتحجز كمنبّه حقيقي مش كإشعار مجدول', () async {
+      final plugin = RecordingPlugin();
+      final scheduler = ReminderScheduler(plugin);
+
+      await scheduler.rescheduleAll([appt('a')]);
+
+      // setAlarmClock هو الاستثناء الوحيد اللي أنظمة شاومي/أوبو/تكنو
+      // بتحترمه — الجدولة العادية بتتقتل مع التطبيق في الخلفية والتذكير
+      // ما يرنّش رغم إن كل الأذونات خضرا.
+      final appointmentCalls = plugin.scheduled
+          .where((c) => (c.namedArguments[#id] as int) < 1900000000)
+          .toList();
+      expect(appointmentCalls, isNotEmpty);
+      for (final call in appointmentCalls) {
+        expect(
+          call.namedArguments[#androidScheduleMode],
+          AndroidScheduleMode.alarmClock,
+        );
+      }
+    });
+
+    test('ملخص الصبح ما ياخدش مرتبة المنبّه', () async {
+      final plugin = RecordingPlugin();
+      final scheduler = ReminderScheduler(plugin);
+
+      // موعد بكرة عشان ملخص بكرة الصبح يتجدول.
+      await scheduler.rescheduleAll([appt('a', hours: 30)]);
+
+      final summaries = plugin.scheduled
+          .where((c) => (c.namedArguments[#id] as int) >= 1900000000)
+          .toList();
+      expect(summaries, isNotEmpty);
+      for (final call in summaries) {
+        // معلومة مش إنذار — ما تزاحمش «المنبّه الجاي» على المواعيد.
+        expect(
+          call.namedArguments[#androidScheduleMode],
+          AndroidScheduleMode.exactAllowWhileIdle,
+        );
+      }
     });
 
     test('عطل الجدولة ما يعلّقش الشات — الرد يوصل ومعاه تنبيه', () async {

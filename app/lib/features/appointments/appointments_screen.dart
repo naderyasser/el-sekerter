@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/arabic.dart';
 import '../../models/appointment.dart';
 import '../../state/appointments_controller.dart';
+import '../../state/providers.dart';
 
 class AppointmentsScreen extends ConsumerWidget {
   const AppointmentsScreen({super.key});
@@ -22,11 +23,14 @@ class AppointmentsScreen extends ConsumerWidget {
         data: (_) {
           if (upcoming.isEmpty && past.isEmpty) return const _EmptyState();
 
+          final unscheduled = ref.watch(schedulerProvider).unscheduledCount;
+
           return RefreshIndicator(
             onRefresh: () => ref.read(appointmentsProvider.notifier).refresh(),
             child: ListView(
               padding: const EdgeInsets.only(bottom: 24),
               children: [
+                if (unscheduled > 0) _TooManyBanner(count: unscheduled),
                 if (upcoming.isNotEmpty) ...[
                   const _SectionHeader('الجاية'),
                   for (final appointment in upcoming)
@@ -41,6 +45,47 @@ class AppointmentsScreen extends ConsumerWidget {
             ),
           );
         },
+      ),
+    );
+  }
+}
+
+/// تحذير لما عدد التنبيهات يعدّي سقف النظام.
+///
+/// الحالة دي كانت بتعدّي في صمت: الموعد يتحفظ ويتعرض في القايمة عادي
+/// و**ما يرنّش أبدًا**. صاحب العمل يشوفه قدامه فيطمّن — وده أسوأ فشل ممكن.
+class _TooManyBanner extends StatelessWidget {
+  const _TooManyBanner({required this.count});
+
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: scheme.errorContainer,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            Icons.notifications_paused_outlined,
+            color: scheme.onErrorContainer,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'مواعيدك أكثر من اللي النظام يقدر ينبّه عليه مرة وحدة، '
+              'فـ$count تنبيه من الأبعد ما اتجدولش. بيتجدولوا تلقائيًا '
+              'كل ما القريب يعدّي — بس افتح التطبيق بين فترة وفترة.',
+              style: TextStyle(color: scheme.onErrorContainer),
+            ),
+          ),
+        ],
       ),
     );
   }

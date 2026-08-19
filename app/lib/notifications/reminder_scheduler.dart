@@ -19,13 +19,31 @@ import '../models/appointment.dart';
 ///   • أندرويد — قناة بأقصى أهمية، وجدولة دقيقة لو الإذن متاح.
 ///   • آيفون — إشعار بمستوى timeSensitive عشان يخترق وضع التركيز. أبل بتحدّ
 ///     الإشعارات المجدولة بـ٦٤ لكل تطبيق وبترمي الزيادة بصمت، عشان كده بنجدول
-///     أقرب [AppConfig.maxScheduledReminders] بس وبنعيد الجدولة كل ما حاجة
-///     تتغيّر.
+///     أقرب [AppConfig.maxScheduledIos] بس وبنعيد الجدولة كل ما حاجة تتغيّر.
+///     أندرويد مافيهوش الحد ده — شوف [AppConfig.maxScheduledAndroid].
 class ReminderScheduler {
-  ReminderScheduler([FlutterLocalNotificationsPlugin? plugin])
-    : _plugin = plugin ?? FlutterLocalNotificationsPlugin();
+  ReminderScheduler([
+    FlutterLocalNotificationsPlugin? plugin,
+    int? maxScheduled,
+  ]) : _plugin = plugin ?? FlutterLocalNotificationsPlugin(),
+       _maxScheduled = maxScheduled;
 
   final FlutterLocalNotificationsPlugin _plugin;
+
+  /// سقف مفروض من الاختبارات. في التشغيل الحقيقي بيفضل null والسقف بيتحدد
+  /// من المنصّة.
+  final int? _maxScheduled;
+
+  /// كام إشعار ينفع نحجزه عند النظام.
+  ///
+  /// الفرق بين المنصّتين حقيقي مش تفصيلة: أبل بتقصّ الزيادة بصمت عند ٦٤،
+  /// وأندرويد بيقبل مئات. توحيدهم على الرقم الآيفوني كان بيخلّي أي موعد
+  /// بعد الخامس والعشرين ما يرنّش على أندرويد من غير أي إشارة.
+  int get _budget =>
+      _maxScheduled ??
+      (Platform.isIOS
+          ? AppConfig.maxScheduledIos
+          : AppConfig.maxScheduledAndroid);
 
   bool _ready = false;
 
@@ -51,6 +69,13 @@ class ReminderScheduler {
   /// بيتنده لما المستخدم يضغط على التذكير أو أحد أزراره.
   /// (معرّف الموعد، معرّف الزرار أو null للضغط على جسم الإشعار).
   void Function(String appointmentId, String? actionId)? onAction;
+
+  /// كام تنبيه ما لقاش مكان في آخر إعادة جدولة.
+  ///
+  /// القص لازم يبان للمستخدم: تنبيه اتقص في صمت معناه موعد ما يرنّش وصاحب
+  /// العمل مطمّن إنه هيرنّ — وده أسوأ من غلط ظاهر. شاشة «مواعيدي» بتعرض
+  /// تحذير لما الرقم ده أكبر من صفر.
+  int unscheduledCount = 0;
 
   AndroidFlutterLocalNotificationsPlugin? get _android => _plugin
       .resolvePlatformSpecificImplementation<
@@ -210,7 +235,24 @@ class ReminderScheduler {
     // التذكيرات تتمسح ولا واحد يتجدول، في صمت كامل. تذكير بيتأخر دقايق
     // (غير دقيق) أهون بكتير من تذكير مش موجود أصلًا.
     final exact = await exactAlarmAllowed();
-    final mode = exact
+
+    // **مواعيد صاحب العمل بتتجدول كمنبّه حقيقي (setAlarmClock).**
+    //
+    // ده أهم سطر في الملف. أجهزة كتير (شاومي، أوبو، تكنو، إنفنكس، هواوي)
+    // بتقتل التطبيقات في الخلفية وبتلغي منبّهاتها المجدولة عشان توفّر
+    // بطارية — فالتذكير ما يرنّش رغم إن كل الأذونات خضرا، وده اللي كان
+    // بيحصل فعلًا. الاستثناء الوحيد اللي بتحترمه الأنظمة دي كلها هو
+    // setAlarmClock: ده اللي بيستخدمه تطبيق المنبّه بتاع النظام، ولو
+    // قتلوه هيبان على طول إن منبّه الصبح ما رنّ. تمنه إن أقرب موعد بيظهر
+    // كـ«المنبّه الجاي» في شريط الحالة — وده مكسب مش عيب: صاحب العمل
+    // يشوف بعينه إن موعده متحجوز فعلًا.
+    final alarmMode = exact
+        ? AndroidScheduleMode.alarmClock
+        : AndroidScheduleMode.inexactAllowWhileIdle;
+
+    // ملخص الصبح معلومة مش إنذار — ما ياخدش مرتبة المنبّه عشان ما يزاحمش
+    // «المنبّه الجاي» على المواعيد الحقيقية.
+    final summaryMode = exact
         ? AndroidScheduleMode.exactAllowWhileIdle
         : AndroidScheduleMode.inexactAllowWhileIdle;
 
@@ -234,20 +276,20 @@ class ReminderScheduler {
     }
     due.sort((a, b) => a.$2.compareTo(b.$2));
 
-    for (final (appointment, fireAt, isSiren) in due.take(
-      AppConfig.maxScheduledReminders,
-    )) {
-      await _schedule(appointment, fireAt, mode, siren: isSiren);
+    final budget = _budget;
+    for (final (appointment, fireAt, isSiren) in due.take(budget)) {
+      await _schedule(appointment, fireAt, alarmMode, siren: isSiren);
     }
 
-    if (due.length > AppConfig.maxScheduledReminders) {
+    unscheduledCount = due.length > budget ? due.length - budget : 0;
+    if (unscheduledCount > 0) {
       debugPrint(
-        'اتجدول ${AppConfig.maxScheduledReminders} من ${due.length} تنبيه — '
+        'اتجدول $budget من ${due.length} تنبيه — '
         'الباقي هيتجدول لما الأقرب يعدّي.',
       );
     }
 
-    await _scheduleMorningSummaries(appointments, now, mode);
+    await _scheduleMorningSummaries(appointments, now, summaryMode);
   }
 
   /// ملخص الصبح: أي يوم في الأسبوع الجاي فيه مواعيد، بياخد إشعار الساعة
@@ -388,6 +430,14 @@ class ReminderScheduler {
   /// التذكير. وأي عطل تاني في إشعار واحد بيتسجّل ويعدّي عشان ما يطيّحش
   /// باقي التذكيرات — قبل كده كان بيوقّع rescheduleAll بعد cancelAll:
   /// كل التذكيرات تتمسح ولا واحد يتجدول، في صمت كامل.
+  /// المرتبة الأقل حدّة من كل مرتبة. الترتيب: منبّه ← دقيق ← غير دقيق.
+  /// تذكير بيتأخر دقايق أهون بكتير من تذكير مش موجود أصلًا.
+  static const Map<AndroidScheduleMode, AndroidScheduleMode> _softer = {
+    AndroidScheduleMode.alarmClock: AndroidScheduleMode.exactAllowWhileIdle,
+    AndroidScheduleMode.exactAllowWhileIdle:
+        AndroidScheduleMode.inexactAllowWhileIdle,
+  };
+
   Future<void> _withFallback(
     AndroidScheduleMode mode,
     Future<void> Function(AndroidScheduleMode mode) schedule,
@@ -395,12 +445,9 @@ class ReminderScheduler {
     try {
       await schedule(mode);
     } on PlatformException catch (e) {
-      if (e.code == 'exact_alarms_not_permitted' &&
-          mode == AndroidScheduleMode.exactAllowWhileIdle) {
-        await _withFallback(
-          AndroidScheduleMode.inexactAllowWhileIdle,
-          schedule,
-        );
+      final softer = _softer[mode];
+      if (e.code == 'exact_alarms_not_permitted' && softer != null) {
+        await _withFallback(softer, schedule);
         return;
       }
       debugPrint('تعذّرت جدولة إشعار: ${e.code}');

@@ -17,7 +17,8 @@ class SettingsScreen extends ConsumerStatefulWidget {
   ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends ConsumerState<SettingsScreen> {
+class _SettingsScreenState extends ConsumerState<SettingsScreen>
+    with WidgetsBindingObserver {
   final _url = TextEditingController();
   final _token = TextEditingController();
 
@@ -27,17 +28,39 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool? _notificationsGranted;
   String _version = '';
 
+  /// اسم شركة الجهاز لو كانت من اللي بتقتل الخلفية — null يعني مافيش داعي
+  /// نزعج المستخدم بخطوة زيادة.
+  String? _vendor;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _load();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _url.dispose();
     _token.dispose();
     super.dispose();
+  }
+
+  /// حالة الإذن بتتقرا في _load مرة واحدة، والشاشة عايشة جوّه IndexedStack —
+  /// فكانت بتفضل معروضة «مرفوض» حتى بعد ما المستخدم يوافق من حوار
+  /// PermissionGate أو من إعدادات الجهاز. حوار الإذن والرجوع من الإعدادات
+  /// الاتنين بيمرّوا بـresumed، فإعادة الفحص هنا بتغطي الحالتين.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _refreshPermission();
+  }
+
+  Future<void> _refreshPermission() async {
+    // اسم الشركة ثابت، بيتقرا مرة في _load — اللي بيتغيّر هو الإذن بس.
+    final granted = await ref.read(schedulerProvider).hasPermission();
+    if (!mounted) return;
+    setState(() => _notificationsGranted = granted);
   }
 
   Future<void> _load() async {
@@ -50,6 +73,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     _url.text = url;
     _token.text = token;
     final granted = await ref.read(schedulerProvider).hasPermission();
+    final vendor = await ref.read(autostartServiceProvider).vendor();
     // رقم النسخة — عشان أي بلاغ مشكلة نعرف على طول هو على أنهي بيلد.
     String version;
     try {
@@ -63,6 +87,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       _loading = false;
       _notificationsGranted = granted;
       _version = version;
+      _vendor = vendor;
     });
   }
 
@@ -70,6 +95,40 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     await ref.read(schedulerProvider).ringSirenNow();
     if (!mounted) return;
     _snack('لو ما سمعت صفّارة الحين، في مشكلة أذونات — كلمنا.');
+  }
+
+  Future<void> _openAutostart() async {
+    final opened = await ref
+        .read(autostartServiceProvider)
+        .openAutostartSettings();
+    if (!mounted) return;
+    if (!opened) {
+      _snack(
+        'ما قدرت أفتح الشاشة. افتح إعدادات الجهاز ← التطبيقات ← السكرتير، '
+        'وفعّل «التشغيل التلقائي» وخلّي البطارية «غير مقيّدة».',
+      );
+    }
+  }
+
+  /// تشخيص فوري للمايك — نفس فكرة زرار الصفّارة: يقول المشكلة بالظبط بدل
+  /// ما المستخدم يكتشفها وهو بيحاول يملي موعد.
+  Future<void> _testMic() async {
+    final speech = ref.read(speechServiceProvider);
+    final ok = await speech.initialize();
+    if (!mounted) return;
+    if (!ok) {
+      _snack(speech.lastProblem.message);
+      return;
+    }
+    // المحرّك موجود، لكن ده مش كفاية: لو العربي مش في قايمته هيرفض أول
+    // ما نبدأ نستمع. أحسن نقولها هنا من إن المستخدم يكتشفها وهو بيملي.
+    _snack(
+      speech.arabicListed
+          ? 'المايك شغّال، ولغة التفريغ ${speech.localeId}.'
+          : 'المحرّك موجود بس العربية مو منزّلة عنده. نزّلها من إعدادات '
+                'الجهاز ← اللغات والإدخال ← الإدخال الصوتي، وإلا التسجيل '
+                'الصوتي ما راح يشتغل.',
+    );
   }
 
   Future<void> _requestNotifications() async {
@@ -247,6 +306,36 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             trailing: TextButton(
               onPressed: _testSiren,
               child: const Text('جرّبها الحين'),
+            ),
+          ),
+          if (_vendor != null)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                Icons.shield_outlined,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+              title: const Text('احمِ التطبيق من الإيقاف'),
+              subtitle: const Text(
+                'جهازك يوقف التطبيقات في الخلفية ويلغي تنبيهاتها. '
+                'فعّل «التشغيل التلقائي» مرة وحدة وخلاص.',
+              ),
+              trailing: TextButton(
+                onPressed: _openAutostart,
+                child: const Text('افتحها'),
+              ),
+            ),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(
+              Icons.mic_none,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            title: const Text('المايك'),
+            subtitle: const Text('الإدخال بالكلام بدل الكتابة.'),
+            trailing: TextButton(
+              onPressed: _testMic,
+              child: const Text('افحصه'),
             ),
           ),
           if (_version.isNotEmpty) ...[

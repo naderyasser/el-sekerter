@@ -6,6 +6,7 @@ import '../data/chat_store.dart';
 import '../data/database.dart';
 import '../data/settings_store.dart';
 import '../device/action_runner.dart';
+import '../device/autostart_service.dart';
 import '../device/calendar_service.dart';
 import '../device/contacts_service.dart';
 import '../device/messaging_service.dart';
@@ -50,6 +51,10 @@ final messagingServiceProvider = Provider<MessagingService>(
 
 final calendarServiceProvider = Provider<CalendarService>(
   (ref) => CalendarService(),
+);
+
+final autostartServiceProvider = Provider<AutostartService>(
+  (ref) => const AutostartService(),
 );
 
 final actionRunnerProvider = Provider<DeviceActionRunner>(
